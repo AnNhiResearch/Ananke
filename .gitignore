@@ -1,0 +1,8 @@
+/target
+
+# graphify artifacts (xem AGENTS.md §11)
+/graphify-out
+
+# trạng thái cục bộ của agent harness
+/.freebuff
+/.screenshots

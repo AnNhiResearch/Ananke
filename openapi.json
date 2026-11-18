@@ -1,0 +1,1124 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ananke API",
+    "description": "Hợp đồng HTTP/JSON + SSE của Ananke (AD-03). File được sinh từ crate `ananke-protocol`; không sửa tay (AD-10). Mọi request mang header `X-Ananke-Protocol: 1`; lỗi dùng RFC 9457 với content type `application/problem+json`.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "/api",
+      "description": "Base path của mọi endpoint (§5)"
+    }
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {
+      "CreateSessionRequest": {
+        "type": "object",
+        "description": "Body của `POST /api/session`.",
+        "required": [
+          "workspace",
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateTurnRequest": {
+        "type": "object",
+        "description": "Body của `POST /api/session/{id}/turn`.",
+        "required": [
+          "input"
+        ],
+        "properties": {
+          "input": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InputPartDto"
+            }
+          }
+        }
+      },
+      "DeviceProfileDto": {
+        "type": "string",
+        "description": "Profile thiết bị theo RAM (AD-15); mirror của `ananke_sandbox::DeviceProfile`.",
+        "enum": [
+          "constrained",
+          "small",
+          "default"
+        ]
+      },
+      "EventDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EventPayloadDto"
+          },
+          {
+            "type": "object",
+            "required": [
+              "seq",
+              "sessionID",
+              "at"
+            ],
+            "properties": {
+              "at": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Mili-giây Unix.",
+                "minimum": 0
+              },
+              "seq": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Dùng cho `?since=` và `Last-Event-ID` khi replay (AD-08).",
+                "minimum": 0
+              },
+              "sessionID": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Event đã gắn `seq` toàn phần trong một session (AD-08).\n\n`seq` tăng đơn điệu trong một session; giữa các session không đảm bảo (§6)."
+      },
+      "EventPayloadDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "type"
+            ],
+            "properties": {
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn.started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "type"
+            ],
+            "properties": {
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn.awaiting_tool"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "usage",
+              "type"
+            ],
+            "properties": {
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn.completed"
+                ]
+              },
+              "usage": {
+                "$ref": "#/components/schemas/UsageDto"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "reason",
+              "type"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn.failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "partID",
+              "kind",
+              "type"
+            ],
+            "properties": {
+              "kind": {
+                "$ref": "#/components/schemas/PartKindDto"
+              },
+              "partID": {
+                "type": "string"
+              },
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "part.started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Batch 16–33 ms và **không** persist (AD-08); client không được giả định\nmỗi token là một frame.",
+            "required": [
+              "turnID",
+              "partID",
+              "kind",
+              "delta",
+              "type"
+            ],
+            "properties": {
+              "delta": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/PartKindDto"
+              },
+              "partID": {
+                "type": "string"
+              },
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "part.delta"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "part",
+              "type"
+            ],
+            "properties": {
+              "part": {
+                "$ref": "#/components/schemas/PartDto"
+              },
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "part.completed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "permissionID",
+              "tool",
+              "arguments",
+              "type"
+            ],
+            "properties": {
+              "arguments": {
+                "type": "object"
+              },
+              "permissionID": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "permission.requested"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turnID",
+              "permissionID",
+              "decision",
+              "type"
+            ],
+            "properties": {
+              "decision": {
+                "$ref": "#/components/schemas/PermissionDecisionDto"
+              },
+              "permissionID": {
+                "type": "string"
+              },
+              "scope": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PermissionScopeDto"
+                  }
+                ]
+              },
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "permission.resolved"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "message",
+              "type"
+            ],
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "warning"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Turn bị ngắt bởi user/system (M1).",
+            "required": [
+              "turnID",
+              "type"
+            ],
+            "properties": {
+              "turnID": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn.interrupted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Resource limit exceeded (AD-15).",
+            "required": [
+              "limit",
+              "current",
+              "action",
+              "type"
+            ],
+            "properties": {
+              "action": {
+                "$ref": "#/components/schemas/ThrottleAction"
+              },
+              "current": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "limit": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "resource.throttled"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Client nên resync từ server state (SSE race recovery).",
+            "required": [
+              "lastServerSeq",
+              "reason",
+              "type"
+            ],
+            "properties": {
+              "lastServerSeq": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "event.resync_required"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Loại chưa biết: giữ envelope, payload bị bỏ (§6).",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Unknown"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Payload của event, gắn loại bằng field `type` (§6).\n\nHiện chỉ khai báo các loại engine phát ra; loại khác rơi vào [`Self::Unknown`]\nđể client forward-compatible và vẫn đọc được `seq` của envelope."
+      },
+      "InputPartDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "type"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Một phần input client gửi lên; client không sinh `id` — server cấp."
+      },
+      "LimitsDto": {
+        "type": "object",
+        "description": "Giới hạn hiệu lực; giá trị mặc định đúng bảng AD-15.",
+        "required": [
+          "maxResidentSessions",
+          "maxParallelTurns",
+          "maxSubagents",
+          "maxContextTokens",
+          "maxPartBytes",
+          "maxEventBytes"
+        ],
+        "properties": {
+          "maxContextTokens": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxEventBytes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxParallelTurns": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxPartBytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Vượt ngưỡng thì spill ra file, part giữ `ref`.",
+            "minimum": 0
+          },
+          "maxResidentSessions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxSubagents": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "MessageDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "parts"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartDto"
+            }
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleDto"
+          }
+        }
+      },
+      "MetaResponse": {
+        "type": "object",
+        "description": "Response của `GET /api/meta`.",
+        "required": [
+          "protocolVersion",
+          "capabilities",
+          "serverVersion",
+          "deviceProfile",
+          "sandbox"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tính năng server hỗ trợ; client bỏ qua tên lạ và degrade (§12)."
+          },
+          "deviceProfile": {
+            "$ref": "#/components/schemas/DeviceProfileDto"
+          },
+          "protocolVersion": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Client phải kiểm tra trước khi dùng API; khác major thì từ chối (§12).",
+            "minimum": 0
+          },
+          "sandbox": {
+            "$ref": "#/components/schemas/SandboxKindDto",
+            "description": "Giá trị đo lúc start, không phải lời hứa cấu hình (§7.2)."
+          },
+          "serverVersion": {
+            "type": "string"
+          }
+        }
+      },
+      "PartDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "text",
+              "type"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "text",
+              "type"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "reasoning"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "callID",
+              "tool",
+              "arguments",
+              "type"
+            ],
+            "properties": {
+              "arguments": {
+                "type": "object"
+              },
+              "callID": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_call"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "callID",
+              "tool",
+              "ok",
+              "output",
+              "type"
+            ],
+            "properties": {
+              "callID": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "output": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_result"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Part trên dây. Client gửi input chỉ dùng [`crate::turn::InputPartDto`]."
+      },
+      "PartKindDto": {
+        "type": "string",
+        "description": "Loại part dùng trong `part.started` / `part.delta` (§6).\n\nAD-06 còn mô tả `permission_request`, `file_change`, `command`,\n`compaction`, `attachment`; các loại đó được thêm khi server thật sự phát ra.",
+        "enum": [
+          "text",
+          "reasoning",
+          "tool_call",
+          "tool_result"
+        ]
+      },
+      "PatchLimitsRequest": {
+        "type": "object",
+        "description": "Body của `PATCH /api/limits`; field vắng mặt nghĩa là giữ nguyên.",
+        "properties": {
+          "maxContextTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxEventBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxParallelTurns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxPartBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxResidentSessions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxSubagents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PermissionDecisionDto": {
+        "type": "string",
+        "description": "Quyết định trả lời `permission.requested` — đúng ba giá trị AD-07.",
+        "enum": [
+          "allow",
+          "deny",
+          "allow_always"
+        ]
+      },
+      "PermissionDecisionRequest": {
+        "type": "object",
+        "description": "Body của `POST /api/session/{id}/permission/{permID}`.",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/PermissionDecisionDto"
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PermissionScopeDto",
+                "description": "Không cần khi `decision = deny`."
+              }
+            ]
+          }
+        }
+      },
+      "PermissionModeDto": {
+        "type": "string",
+        "description": "Policy hiệu lực của session; giá trị trùng `PermissionMode` của core.",
+        "enum": [
+          "read-only",
+          "workspace-write",
+          "danger-full-access",
+          "external"
+        ]
+      },
+      "PermissionScopeDto": {
+        "type": "string",
+        "description": "Phạm vi áp dụng của quyết định (AD-07).",
+        "enum": [
+          "once",
+          "session",
+          "project"
+        ]
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "description": "Lỗi chuẩn hoá theo RFC 9457.",
+        "required": [
+          "type",
+          "title",
+          "status"
+        ],
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mã ổn định cho client, ví dụ [`CODE_LIMIT_EXCEEDED`]."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instance": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Mã HTTP lặp lại trong body để proxy/log không phải đoán.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "Mô tả ngắn, ổn định theo loại lỗi."
+          },
+          "type": {
+            "type": "string",
+            "description": "URI nhận dạng loại lỗi; mặc định `about:blank`."
+          }
+        }
+      },
+      "RoleDto": {
+        "type": "string",
+        "enum": [
+          "user",
+          "assistant",
+          "tool"
+        ]
+      },
+      "SandboxKindDto": {
+        "type": "string",
+        "description": "Cơ chế sandbox cấp OS thực tế đo được (§7.2); mirror của `SandboxKind`.",
+        "enum": [
+          "landlock",
+          "seatbelt",
+          "restricted-token",
+          "none"
+        ]
+      },
+      "SessionDto": {
+        "type": "object",
+        "description": "Session trên dây. `parentID` chỉ có với sub-agent (AD-16).",
+        "required": [
+          "id",
+          "workspace",
+          "title",
+          "model",
+          "createdAt"
+        ],
+        "properties": {
+          "archivedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SessionStateDto": {
+        "type": "object",
+        "description": "Snapshot để resync (`GET /api/session/{id}/state`, AD-08).",
+        "required": [
+          "session",
+          "turns",
+          "messages",
+          "lastSeq"
+        ],
+        "properties": {
+          "lastSeq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`seq` cuối cùng đã gộp; client stream tiếp từ `since = lastSeq`.",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageDto"
+            }
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionDto"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TurnDto"
+            }
+          }
+        }
+      },
+      "SteerRequest": {
+        "type": "object",
+        "description": "Body của `POST /api/session/{id}/turn/{turnID}/steer`.",
+        "required": [
+          "input"
+        ],
+        "properties": {
+          "input": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InputPartDto"
+            }
+          }
+        }
+      },
+      "ThrottleAction": {
+        "type": "string",
+        "description": "Hành động khi resource bị throttle (AD-15).",
+        "enum": [
+          "queued",
+          "rejected"
+        ]
+      },
+      "TurnAcceptedResponse": {
+        "type": "object",
+        "description": "Response `202` của `POST /api/session/{id}/turn` (§5.2).",
+        "required": [
+          "turnID"
+        ],
+        "properties": {
+          "turnID": {
+            "type": "string"
+          }
+        }
+      },
+      "TurnDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "parts",
+          "usage"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartDto"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/TurnStatusDto"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageDto"
+          }
+        }
+      },
+      "TurnStatusDto": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "running"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Đã persist nhưng đang chờ tool dài; restart phải hoàn tất từ đây (AD-17).",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "awaiting_tool"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "interrupted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "status"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "UpdateSessionRequest": {
+        "type": "object",
+        "description": "Body của `PATCH /api/session/{id}`; field vắng mặt nghĩa là giữ nguyên.",
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permissionMode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PermissionModeDto"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UsageDto": {
+        "type": "object",
+        "required": [
+          "inputTokens",
+          "outputTokens"
+        ],
+        "properties": {
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

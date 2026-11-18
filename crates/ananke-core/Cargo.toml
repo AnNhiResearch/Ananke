@@ -1,0 +1,18 @@
+[package]
+name = "ananke-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Ananke agent engine: session/turn primitives, agent loop, provider and tool contracts"
+
+[dependencies]
+async-trait = { workspace = true }
+futures-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+futures = "0.3"
+tokio = { workspace = true }

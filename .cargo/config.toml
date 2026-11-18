@@ -1,0 +1,11 @@
+# Cấu hình build cho máy dev (không ảnh hưởng tới artifact phát hành).
+#
+# Windows: dùng rust-lld đi kèm toolchain thay cho link.exe của MSVC.
+# Link bước này là phần chậm nhất của mỗi lần rebuild vì phải ghi file .pdb;
+# lld-link nhanh hơn đáng kể và không cần cài thêm gì.
+[target.'cfg(windows)']
+linker = "rust-lld.exe"
+
+[build]
+# Giữ nguyên target dir mặc định để cache dùng chung giữa các lần build.
+incremental = true

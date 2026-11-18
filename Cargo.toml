@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ananke-core",
+    "crates/ananke-protocol",
+    "crates/ananke-provider",
+    "crates/ananke-sandbox",
+    "crates/ananke-server",
+    "crates/ananke-store",
+    "crates/ananke-tools",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+# Dev/profile tuning: giữ vòng lặp sửa-build ngắn trên máy 8 core.
+[profile.dev]
+# "line-tables-only": đủ để debugger nhảy đúng dòng, nhưng bỏ phần lớn
+# khối lượng debug info — đây là chi phí lớn nhất khi link trên Windows.
+debug = 1
+incremental = true
+
+[profile.dev.package."*"]
+# Dependency không cần debug info: giảm mạnh kích thước .pdb và thời gian link.
+debug = false
+
+[workspace.dependencies]
+ananke-core = { path = "crates/ananke-core" }
+ananke-protocol = { path = "crates/ananke-protocol" }
+ananke-provider = { path = "crates/ananke-provider" }
+ananke-sandbox = { path = "crates/ananke-sandbox" }
+ananke-server = { path = "crates/ananke-server" }
+ananke-store = { path = "crates/ananke-store" }
+ananke-tools = { path = "crates/ananke-tools" }
+anyhow = "1"
+async-stream = "0.3"
+async-trait = "0.1"
+axum = "0.8"
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+globset = "0.4"
+bytes = "1"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+utoipa = { version = "5", features = ["macros"] }
+tokio = { version = "1", features = ["sync", "macros", "rt", "rt-multi-thread", "time"] }
+tower = "0.5"
+uuid = "1"

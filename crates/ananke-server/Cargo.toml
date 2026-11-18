@@ -1,0 +1,37 @@
+[package]
+name = "ananke-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Ananke HTTP/SSE server: axum transport over the Ananke protocol"
+
+[lib]
+name = "ananke_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ananke-server"
+path = "src/main.rs"
+
+[dependencies]
+ananke-core = { workspace = true }
+ananke-protocol = { workspace = true }
+ananke-provider = { workspace = true }
+ananke-sandbox = { workspace = true }
+ananke-store = { workspace = true }
+ananke-tools = { workspace = true }
+anyhow = { workspace = true }
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "signal"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+utoipa = { workspace = true }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { workspace = true }
