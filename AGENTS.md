@@ -130,13 +130,18 @@ bằng tree-sitter, deterministic, không cần API key). **Câu hỏi về cấ
 trước, đừng grep.**
 
 - Ai gọi ai / kiểu này ở đâu / hai module có liên hệ không:
-  `graphify explain "X"`, `graphify path "A" "B"`, `graphify query "..."`.
+  `graphify query "câu hỏi"`, `graphify explain "path::Symbol"`, `graphify path "A" "B"`.
 - Hub kiến trúc (thứ mọi thứ đi qua): `graphify god-nodes`.
-- Cần một mục trong tài liệu dài (§4): `graphify section "ARCHITECTURE.md#AD-20"`
-  thay vì đọc cả file.
-- Quan hệ crate→crate: `graphify path "ananke-tools" "ananke-store"` (phải rỗng —
-  xem §6).
-- Trước khi sửa code, kiểm tra graph có tươi không: `graphify check-update .`.
+- Kiến trúc/quyết định trong tài liệu dài (§4): `graphify query "plugin privilege levels"`
+  — trả về node `AD-xx` kèm edge, không cần đọc cả file. (`graphify section` chỉ dùng
+  được khi tài liệu được index thành section; graph hiện tại index AD-xx thành concept
+  node, nên dùng `query`.)
+- Quan hệ crate→crate (cần `--cargo` khi extract):
+  `graphify path "ananke-tools" "ananke-store"` phải **rỗng** (xem §6);
+  `graphify path "ananke-server" "ananke-store"` phải có 1 hop `crate_depends_on`.
+- Trước khi sửa code, kiểm tra graph có tươi không: `graphify check-update .`; đổi
+  `Cargo.toml` thì phải `graphify extract . --cargo` (lệnh `update` không tự thêm
+  crate edge).
 
 **Giới hạn.** Graph trả lời câu hỏi *về* code; nó **không** cấp quyền đọc file ngoài
 phạm vi (§1, §4). Trả lời từ graph là hợp lệ; mở file của crate chưa được cấp thì vẫn
