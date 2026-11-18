@@ -184,8 +184,16 @@ pub async fn get_session_state(
         .ok_or_else(|| not_found(&id))?;
 
     let last_seq = state.store.max_event_seq(&id).map_err(internal)?;
-    let live = handle.lock().await;
-    Ok(Json(dto::session_state_dto(&meta, &live, last_seq)))
+    // If turn is currently executing, it holds the session lock.
+    // In that case, load the persisted session snapshot from store to avoid blocking get_session_state!
+    let dto = match handle.try_lock() {
+        Ok(live) => dto::session_state_dto(&meta, &live, last_seq),
+        Err(_) => {
+            let persisted = state.store.load_session(&id).map_err(internal)?;
+            dto::session_state_dto(&meta, &persisted, last_seq)
+        }
+    };
+    Ok(Json(dto))
 }
 
 /// Ghép metadata với session trong RAM nếu có. `try_lock` để danh sách không bị

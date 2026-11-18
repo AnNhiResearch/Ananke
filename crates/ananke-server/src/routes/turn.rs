@@ -90,9 +90,10 @@ pub async fn create_turn(
     let engine = Arc::clone(&state.engine);
     let task_session = id.clone();
     let sessions = state.sessions.clone();
+    let running_tasks = Arc::clone(&state.running_tasks);
     // Increment active turns counter when turn starts
     state.sessions.increment_active_turns();
-    tokio::spawn(async move {
+    let join_handle = tokio::spawn(async move {
         let mut guard = guard;
         let result = engine.run_turn(&mut guard, messages).await;
         if let Err(err) = &result {
@@ -121,10 +122,14 @@ pub async fn create_turn(
     .await;
 
     match started {
-        Ok(Some(turn_id)) => Ok((
-            StatusCode::ACCEPTED,
-            Json(TurnAcceptedResponse { turn_id }),
-        )),
+        Ok(Some(turn_id)) => {
+            let core_turn_id = TurnId::from(turn_id.clone());
+            running_tasks.lock().await.insert(core_turn_id, join_handle);
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(TurnAcceptedResponse { turn_id }),
+            ))
+        }
         Ok(None) => {
             let problem = ananke_protocol::ProblemDetails::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
@@ -153,6 +158,12 @@ pub async fn interrupt_turn(
 ) -> ApiResult<StatusCode> {
     let session_id = session_id(&raw_session);
     let turn_id = TurnId::from(raw_turn);
+
+    // Abort running task if active to release session lock and stop waiting
+    let running_task = state.running_tasks.lock().await.remove(&turn_id);
+    if let Some(handle) = running_task {
+        handle.abort();
+    }
 
     let handle = state
         .sessions
@@ -206,6 +217,12 @@ pub async fn steer_turn(
     let session_id = session_id(&raw_session);
     let turn_id = TurnId::from(raw_turn);
 
+    // Abort running task if active so steer can take over driving the turn
+    let running_task = state.running_tasks.lock().await.remove(&turn_id);
+    if let Some(handle) = running_task {
+        handle.abort();
+    }
+
     let handle = state
         .sessions
         .get_or_load(&state.store, &session_id)
@@ -213,7 +230,7 @@ pub async fn steer_turn(
         .map_err(map_store_error)?
         .ok_or_else(|| not_found(&session_id))?;
 
-    let mut session = handle.lock().await;
+    let session = handle.lock().await;
     
     // Check turn status before attempting to steer
     let can_steer = {
@@ -234,19 +251,29 @@ pub async fn steer_turn(
 
     let input_messages = vec![Message::new(Role::User, dto::input_parts(&body.input))];
 
-    state
-        .engine
-        .steer_turn(&mut session, &turn_id, input_messages)
-        .await
-        .map_err(|e| {
-            let problem = ananke_protocol::ProblemDetails::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                "Internal Server Error",
-            )
-            .with_detail(e.to_string())
-            .with_code("internal");
-            ApiError::Internal(problem)
-        })?;
+    // Steer drive loop should run asynchronously in the background so the HTTP steer request returns 204 promptly!
+    let engine = Arc::clone(&state.engine);
+    let task_session = session_id.clone();
+    let steer_turn_id = turn_id.clone();
+    let sessions = state.sessions.clone();
+    let running_tasks = Arc::clone(&state.running_tasks);
+    
+    // Drop session lock before spawning new driver task
+    drop(session);
+
+    let handle_clone = Arc::clone(&handle);
+    let join_handle = tokio::spawn(async move {
+        let session = handle_clone.lock().await;
+        let mut session = session;
+        let result = engine.steer_turn(&mut session, &steer_turn_id, input_messages).await;
+        if let Err(err) = &result {
+            tracing::error!(session = %task_session, error = %err, "steer turn kết thúc với lỗi");
+        }
+        drop(session);
+        sessions.decrement_active_turns();
+    });
+
+    running_tasks.lock().await.insert(turn_id, join_handle);
 
     Ok(StatusCode::NO_CONTENT)
 }

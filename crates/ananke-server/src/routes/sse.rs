@@ -6,6 +6,7 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
+use ananke_protocol::event::EventPayloadDto;
 use ananke_protocol::EventDto;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -57,8 +58,10 @@ pub async fn events(
         loop {
             match receiver.recv().await {
                 Ok(dto) => {
-                    // Deduplication: skip if we've already seen this seq
-                    if dto.seq <= last_seen_seq {
+                    let is_part_delta = matches!(dto.payload, EventPayloadDto::PartDelta { .. });
+
+                    // Deduplication: skip if we've already seen this seq, unless it's PartDelta
+                    if !is_part_delta && dto.seq <= last_seen_seq {
                         continue;
                     }
                     
@@ -80,7 +83,9 @@ pub async fn events(
                         }
                     }
                     first_event = false;
-                    last_seen_seq = dto.seq;
+                    if !is_part_delta {
+                        last_seen_seq = dto.seq;
+                    }
                     
                     match frame(&dto) {
                         Ok(frame) => yield Ok(frame),

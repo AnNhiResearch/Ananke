@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use ananke_core::{Engine, Session, SessionId, StoreError, TurnStatus};
+use ananke_core::{Engine, Session, SessionId, StoreError, TurnId, TurnStatus};
 use ananke_protocol::{LimitsDto, MetaResponse};
 use ananke_store::SqliteStore;
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
+use tokio::task::JoinHandle;
 
 use crate::approval::ApprovalBroker;
 use crate::config::Config;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub approval: Arc<ApprovalBroker>,
     pub limits: Arc<RwLock<LimitsDto>>,
     pub meta: Arc<MetaResponse>,
+    pub running_tasks: Arc<AsyncMutex<HashMap<TurnId, JoinHandle<()>>>>,
 }
 
 type SessionHandle = Arc<AsyncMutex<Session>>;

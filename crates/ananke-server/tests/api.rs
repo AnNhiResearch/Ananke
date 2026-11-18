@@ -7,7 +7,7 @@ use ananke_core::{
     engine::Engine,
     ids::SessionId,
     provider::{ModelProvider, ProviderEvent, ProviderRequest, ProviderStream},
-    tool::{Tool, ToolRegistry},
+    tool::ToolRegistry,
     turn::Usage,
 };
 use ananke_protocol::{
@@ -77,21 +77,42 @@ impl ModelProvider for MockProviderHolding {
 
 // ── Mock ModelProvider có ToolCall ────────────────────────────────────────────
 
-struct MockProviderWithToolCall;
+struct MockProviderWithToolCall {
+    has_called: std::sync::atomic::AtomicBool,
+}
+
+impl MockProviderWithToolCall {
+    fn new() -> Self {
+        Self {
+            has_called: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl ModelProvider for MockProviderWithToolCall {
     async fn stream(&self, _request: ProviderRequest) -> Result<ProviderStream, ananke_core::provider::ProviderError> {
-        let stream: ProviderStream = Box::pin(futures_util::stream::iter(vec![
-            ProviderEvent::ToolCall {
-                call_id: ananke_core::ids::ToolCallId::new(),
-                tool: "test_tool".to_owned(),
-                arguments: serde_json::json!({"arg": "value"}),
-            },
-            ProviderEvent::Done {
-                usage: Usage { input_tokens: 10, output_tokens: 5 },
-            },
-        ]));
+        let called = self.has_called.swap(true, std::sync::atomic::Ordering::SeqCst);
+        let events = if !called {
+            vec![
+                ProviderEvent::ToolCall {
+                    call_id: ananke_core::ids::ToolCallId::new(),
+                    tool: "test_tool".to_owned(),
+                    arguments: serde_json::json!({"arg": "value"}),
+                },
+                ProviderEvent::Done {
+                    usage: Usage { input_tokens: 10, output_tokens: 5 },
+                },
+            ]
+        } else {
+            vec![
+                ProviderEvent::TextDelta("Tool executed successfully".to_owned()),
+                ProviderEvent::Done {
+                    usage: Usage { input_tokens: 15, output_tokens: 8 },
+                },
+            ]
+        };
+        let stream: ProviderStream = Box::pin(futures_util::stream::iter(events));
         Ok(stream)
     }
 }
@@ -128,6 +149,34 @@ fn make_mock_registry_with_tool() -> Arc<ToolRegistry> {
     }
     
     registry.register(Arc::new(TestTool)).unwrap();
+    Arc::new(registry)
+}
+
+fn make_mock_registry_with_hanging_tool() -> Arc<ToolRegistry> {
+    let mut registry = ToolRegistry::new();
+    
+    struct HangingTool;
+    #[async_trait::async_trait]
+    impl ananke_core::Tool for HangingTool {
+        fn name(&self) -> &str { "test_tool" }
+        fn description(&self) -> &str { "Hanging test tool" }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "arg": { "type": "string" }
+                }
+            })
+        }
+        fn mutating(&self) -> bool { true }
+        async fn execute(&self, _arguments: serde_json::Value) -> ananke_core::ToolOutput {
+            // Keep tool executing forever so turn stays in AwaitingTool when observed
+            futures_util::future::pending::<()>().await;
+            ananke_core::ToolOutput::ok("tool result")
+        }
+    }
+    
+    registry.register(Arc::new(HangingTool)).unwrap();
     Arc::new(registry)
 }
 
@@ -185,6 +234,7 @@ async fn make_test_state() -> AppState {
         approval,
         limits,
         meta,
+        running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     }
 }
 
@@ -241,6 +291,7 @@ async fn make_test_state_holding() -> AppState {
         approval,
         limits,
         meta,
+        running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     }
 }
 
@@ -559,30 +610,40 @@ async fn part_delta_khong_persist_trong_replay() {
         approval,
         limits,
         meta,
+        running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let app_with_delta = build(state_with_delta).layer(from_fn(protocol_guard));
 
-    let turn_id = create_turn_helper(
+    // Connect SSE stream first so live events including PartDelta are captured
+    let sse_task = {
+        let app_clone = app_with_delta.clone();
+        let sid = session_id.clone();
+        tokio::spawn(async move {
+            let resp = request(
+                &app_clone,
+                Method::GET,
+                &format!("/api/session/{sid}/event"),
+                None,
+                vec![(
+                    HeaderName::from_static("x-ananke-protocol"),
+                    HeaderValue::from_static("1"),
+                )],
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            read_sse_events(resp, 20).await
+        })
+    };
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    let _turn_id = create_turn_helper(
         &app_with_delta,
         &session_id,
         vec![ananke_protocol::InputPartDto::Text { text: "test".to_owned() }],
     ).await;
 
-    // Stream SSE and collect all events
-    let resp = request(
-        &app_with_delta,
-        Method::GET,
-        &format!("/api/session/{session_id}/event"),
-        None,
-        vec![(
-            HeaderName::from_static("x-ananke-protocol"),
-            HeaderValue::from_static("1"),
-        )],
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let live_events = read_sse_events(resp, 20).await;
+    let live_events = sse_task.await.unwrap();
     
     // Verify PartDelta events arrive in live stream
     let part_deltas: Vec<_> = live_events.iter()
@@ -643,7 +704,7 @@ async fn replay_qua_since_va_last_event_id() {
     let app = build(state.clone()).layer(from_fn(protocol_guard));
 
     let session_id = create_session_helper(&app).await;
-    let turn_id = create_turn_helper(
+    let _turn_id = create_turn_helper(
         &app,
         &session_id,
         vec![ananke_protocol::InputPartDto::Text { text: "test".to_owned() }],
@@ -747,8 +808,8 @@ async fn persist_turn_truoc_dispatch_tool_ad_17() {
     let session_id = create_session_helper(&app).await;
 
     // Start turn with provider that emits ToolCall
-    let provider = Arc::new(MockProviderWithToolCall);
-    let tools = make_mock_registry_with_tool();
+    let provider = Arc::new(MockProviderWithToolCall::new());
+    let tools = make_mock_registry_with_hanging_tool();
     let approval = ApprovalBroker::new(state.hub.clone(), state.store.clone());
     let engine = Arc::new(Engine::new(
         provider,
@@ -759,9 +820,11 @@ async fn persist_turn_truoc_dispatch_tool_ad_17() {
     ).with_permission(ananke_core::PermissionMode::DangerFullAccess));
 
     let sessions = Arc::new(ananke_server::state::SessionRegistry::new());
+    let shared_store = state.store.clone();
     let state_with_tool = ananke_server::state::AppState {
         engine,
         sessions,
+        running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         ..state
     };
     let app_with_tool = build(state_with_tool).layer(from_fn(protocol_guard));
@@ -798,6 +861,11 @@ async fn persist_turn_truoc_dispatch_tool_ad_17() {
 
     // Simulate server restart: create new AppState with same store
     let new_state = make_test_state().await;
+    // Replace new_state store with the same store
+    let new_state = ananke_server::state::AppState {
+        store: shared_store,
+        ..new_state
+    };
     let new_app = build(new_state.clone()).layer(from_fn(protocol_guard));
 
     // Check turn status after "restart"
@@ -1076,10 +1144,10 @@ async fn sse_resync_required_stale_last_event_id() {
     let app = build(state.clone()).layer(from_fn(protocol_guard));
 
     let session_id = create_session_helper(&app).await;
-    let turn_id = create_turn_helper(
+    let _turn_id = create_turn_helper(
         &app,
         &session_id,
-        vec![ananke_protocol::InputPartDto::Text { text: "test".to_owned() }],
+        vec![ananke_protocol::InputPartDto::Text { text: "steer target".to_owned() }],
     ).await;
 
     // Wait for turn to complete and events to be emitted
@@ -1101,7 +1169,7 @@ async fn sse_resync_required_stale_last_event_id() {
     let all_events = read_sse_events(resp_all, 20).await;
     assert!(!all_events.is_empty(), "Should have events");
     
-    let last_seq = all_events.last().expect("at least one event").seq;
+    let _last_seq = all_events.last().expect("at least one event").seq;
 
     // Reconnect with stale Last-Event-ID (seq that no longer exists in buffer)
     // Use a very old seq that's beyond what the server keeps
@@ -1151,7 +1219,7 @@ async fn sse_resync_required_gap_detection() {
     let app = build(state.clone()).layer(from_fn(protocol_guard));
 
     let session_id = create_session_helper(&app).await;
-    let turn_id = create_turn_helper(
+    let _turn_id = create_turn_helper(
         &app,
         &session_id,
         vec![ananke_protocol::InputPartDto::Text { text: "test".to_owned() }],
@@ -1203,7 +1271,7 @@ async fn sse_resync_required_gap_detection() {
         let mid_events = read_sse_events(resp_mid, 20).await;
         
         // Check for resync_required if there's a gap in the broadcast buffer
-        let resync_events: Vec<_> = mid_events.iter()
+        let _resync_events: Vec<_> = mid_events.iter()
             .filter(|e| matches!(e.payload, ananke_protocol::event::EventPayloadDto::EventResyncRequired { .. }))
             .collect();
         
@@ -1225,7 +1293,7 @@ async fn permission_allow_always_scope() {
 
     // Start a turn that will request permission for a tool
     // We need a tool that requires permission
-    let provider = Arc::new(MockProviderWithToolCall);
+    let provider = Arc::new(MockProviderWithToolCall::new());
     let tools = make_mock_registry_with_tool();
     let approval = ApprovalBroker::new(state.hub.clone(), state.store.clone());
     let engine = Arc::new(Engine::new(
@@ -1245,7 +1313,7 @@ async fn permission_allow_always_scope() {
     };
     let app_with_perm = build(state_with_perm).layer(from_fn(protocol_guard));
 
-    let turn_id = create_turn_helper(
+    let _turn_id = create_turn_helper(
         &app_with_perm,
         &session_id,
         vec![ananke_protocol::InputPartDto::Text { text: "test".to_owned() }],
@@ -1274,7 +1342,7 @@ async fn permission_allow_always_scope() {
         .find(|e| matches!(e.payload, ananke_protocol::event::EventPayloadDto::PermissionRequested { .. }))
         .expect("Should have permission.requested event");
 
-    let (perm_id, tool_name) = if let ananke_protocol::event::EventPayloadDto::PermissionRequested { 
+    let (perm_id, _tool_name) = if let ananke_protocol::event::EventPayloadDto::PermissionRequested { 
         permission_id, tool, .. } = &perm_requested.payload {
         (permission_id.clone(), tool.clone())
     } else {
@@ -1330,7 +1398,7 @@ async fn permission_allow_always_scope() {
     let events2 = read_sse_events(resp_events2, 20).await;
 
     // Should NOT have permission.requested for the same tool (auto-approved)
-    let perm_requested2: Vec<_> = events2.iter()
+    let _perm_requested2: Vec<_> = events2.iter()
         .filter(|e| matches!(e.payload, ananke_protocol::event::EventPayloadDto::PermissionRequested { .. }))
         .collect();
 

@@ -68,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
         approval,
         limits,
         meta: Arc::new(dto::meta_response()),
+        running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     let app = router::build(state);
