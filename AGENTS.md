@@ -129,6 +129,28 @@ Repo này có graph tri thức cục bộ do `graphify` dựng (`graphify-out/gr
 bằng tree-sitter, deterministic, không cần API key). **Câu hỏi về cấu trúc thì hỏi graph
 trước, đừng grep.**
 
+### 11.1 Nếu … thì dùng graphify
+
+Dùng graphify **trước khi** grep/đọc file nếu rơi vào một trong các trường hợp sau:
+
+| Nếu | Thì |
+|---|---|
+| Câu hỏi là "ai gọi X", "X định nghĩa ở đâu", "đổi Y ảnh hưởng gì" | `graphify explain "path::Symbol"` |
+| Cần biết hai thứ có liên hệ không (crate, module, kiểu) | `graphify path "A" "B"` (thêm `--undirected` nếu muốn chắc chắn không có cạnh nào) |
+| Cần tìm khái niệm nhưng không biết tên symbol | `graphify query "câu hỏi"` |
+| Cần một quyết định kiến trúc trong `ARCHITECTURE*.md` (§4) | `graphify query "AD-20 plugin process"` — trả node + edge, không đọc cả file |
+| Cần biết hub / thứ gì đang bị phụ thuộc nhiều | `graphify god-nodes` |
+| Muốn chứng minh "crate A không phụ thuộc crate B" | `graphify path "ananke-a" "ananke-b"` phải rỗng |
+| Không chắc graph còn đúng | `graphify check-update .` → nếu cần thì `graphify update .` **trước** khi tin kết quả |
+
+Dùng grep/đọc file (không dùng graph) nếu:
+
+- Nếu cần **nội dung chính xác** của code — graph chỉ có tên, chữ ký và quan hệ,
+  không có thân hàm và không thay được việc đọc file khi sửa.
+- Nếu thứ đang tìm **chưa có trong graph** (file mới, crate mới, chưa `graphify update`).
+- Nếu cần đúng câu chữ trong markdown (`grep -n`) — node tài liệu chỉ tóm ý, không
+  bảo đảm khớp nguyên văn.
+
 - Ai gọi ai / kiểu này ở đâu / hai module có liên hệ không:
   `graphify query "câu hỏi"`, `graphify explain "path::Symbol"`, `graphify path "A" "B"`.
 - Hub kiến trúc (thứ mọi thứ đi qua): `graphify god-nodes`.
