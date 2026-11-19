@@ -413,13 +413,14 @@ impl Engine {
                 }
             }
 
+            let mode = session.permission_mode;
             let output = match self.tools.get(&call.tool) {
                 None => ToolOutput::error(format!("tool `{}` không tồn tại", call.tool)),
-                Some(tool) => match self.permission.verdict(tool.mutating()) {
+                Some(tool) => match mode.verdict(tool.mutating()) {
                     Verdict::Allow => tool.execute(call.arguments.clone()).await,
                     Verdict::Deny => ToolOutput::error(format!(
                         "policy `{:?}` không cho phép tool `{}`",
-                        self.permission, call.tool
+                        mode, call.tool
                     )),
                     Verdict::Ask => match self.ask_permission(session, turn_id, &call).await {
                         Decision::Deny => ToolOutput::error("người dùng từ chối chạy tool"),

@@ -293,6 +293,15 @@ fn permission_decision_dto(decision: Decision) -> protocol::PermissionDecisionDt
     }
 }
 
+pub fn permission_mode_dto_to_core(mode: protocol::PermissionModeDto) -> ananke_core::PermissionMode {
+    match mode {
+        protocol::PermissionModeDto::ReadOnly => ananke_core::PermissionMode::ReadOnly,
+        protocol::PermissionModeDto::WorkspaceWrite => ananke_core::PermissionMode::WorkspaceWrite,
+        protocol::PermissionModeDto::DangerFullAccess => ananke_core::PermissionMode::DangerFullAccess,
+        protocol::PermissionModeDto::External => ananke_core::PermissionMode::External,
+    }
+}
+
 /// Chuyển input của client thành parts core. Hiện chỉ hỗ trợ `Text`; server cấp
 /// `id` qua generator của core (`PartId::new()`).
 pub fn input_parts(input: &[protocol::InputPartDto]) -> Vec<Part> {

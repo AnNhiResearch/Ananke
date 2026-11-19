@@ -198,14 +198,21 @@ impl SqliteStore {
     /// Ghi metadata session. `turn` và `message` do [`SessionStore`] quản lý.
     pub fn save_session(&self, session: &Session) -> Result<(), StoreError> {
         let conn = self.lock();
+        let mode_str = match session.permission_mode {
+            ananke_core::PermissionMode::ReadOnly => "read-only",
+            ananke_core::PermissionMode::WorkspaceWrite => "workspace-write",
+            ananke_core::PermissionMode::DangerFullAccess => "danger-full-access",
+            ananke_core::PermissionMode::External => "external",
+        };
         conn.execute(
-            "INSERT INTO session (id, parent_id, workspace, worktree, title, model, created_at, archived_at) \
-             VALUES (?1, NULL, '', NULL, ?2, ?3, ?4, NULL) \
-             ON CONFLICT (id) DO UPDATE SET title = excluded.title, model = excluded.model",
+            "INSERT INTO session (id, parent_id, workspace, worktree, title, model, permission_mode, created_at, archived_at) \
+             VALUES (?1, NULL, '', NULL, ?2, ?3, ?4, ?5, NULL) \
+             ON CONFLICT (id) DO UPDATE SET title = excluded.title, model = excluded.model, permission_mode = excluded.permission_mode",
             params![
                 session.id.as_str(),
                 &session.title,
                 &session.model,
+                mode_str,
                 now_millis() as i64
             ],
         )
@@ -215,19 +222,30 @@ impl SqliteStore {
 
     /// Nạp lại session cùng toàn bộ turn. Trả `NotFound` nếu chưa `save_session`.
     pub fn load_session(&self, session_id: &SessionId) -> Result<Session, StoreError> {
-        let (title, model) = {
+        let (title, model, mode_str) = {
             let conn = self.lock();
             conn.query_row(
-                "SELECT title, model FROM session WHERE id = ?1",
+                "SELECT title, model, permission_mode FROM session WHERE id = ?1",
                 [session_id.as_str()],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2).unwrap_or_else(|_| "workspace-write".to_string()),
+                )),
             )
             .optional()
             .map_err(map_err)?
             .ok_or_else(|| StoreError::NotFound(format!("session {session_id}")))?
         };
 
-        let mut session = Session::new(model).with_title(title);
+        let mode = match mode_str.as_str() {
+            "read-only" => ananke_core::PermissionMode::ReadOnly,
+            "danger-full-access" => ananke_core::PermissionMode::DangerFullAccess,
+            "external" => ananke_core::PermissionMode::External,
+            _ => ananke_core::PermissionMode::WorkspaceWrite,
+        };
+
+        let mut session = Session::new(model).with_title(title).with_permission_mode(mode);
         session.id = session_id.clone();
         for turn in self.read_turns(session_id)? {
             session.push_turn(turn);

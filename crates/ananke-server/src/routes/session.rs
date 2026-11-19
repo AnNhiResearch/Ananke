@@ -107,11 +107,16 @@ pub async fn update_session(
         .ok_or_else(|| not_found(&id))?;
 
     if let Some(mode) = body.permission_mode {
-        tracing::warn!(
-            session = %id,
-            ?mode,
-            "permissionMode theo session chưa hỗ trợ ở M0, bỏ qua"
-        );
+        let core_mode = dto::permission_mode_dto_to_core(mode);
+        if let Some(handle) = state.sessions.get(&id).await {
+            if let Ok(mut live) = handle.try_lock() {
+                live.permission_mode = core_mode;
+                let _ = state.store.save_session(&live);
+            }
+        } else if let Ok(mut persisted) = state.store.load_session(&id) {
+            persisted.permission_mode = core_mode;
+            let _ = state.store.save_session(&persisted);
+        }
     }
 
     let changed = state

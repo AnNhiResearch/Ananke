@@ -81,7 +81,11 @@ CREATE TABLE checkpoint (
 );
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1];
+const SCHEMA_V2: &str = r#"
+ALTER TABLE session ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'workspace-write';
+"#;
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
 
 fn map_err(err: rusqlite::Error) -> StoreError {
     StoreError::Failed(err.to_string())

@@ -1,3 +1,4 @@
+use crate::approval::PermissionMode;
 use crate::ids::{SessionId, TurnId};
 use crate::message::Message;
 use crate::turn::Turn;
@@ -9,6 +10,7 @@ pub struct Session {
     pub id: SessionId,
     pub title: String,
     pub model: String,
+    pub permission_mode: PermissionMode,
     messages: Vec<Message>,
     turns: Vec<Turn>,
 }
@@ -19,9 +21,15 @@ impl Session {
             id: SessionId::new(),
             title: String::new(),
             model: model.into(),
+            permission_mode: PermissionMode::WorkspaceWrite,
             messages: Vec::new(),
             turns: Vec::new(),
         }
+    }
+
+    pub fn with_permission_mode(mut self, mode: PermissionMode) -> Self {
+        self.permission_mode = mode;
+        self
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {

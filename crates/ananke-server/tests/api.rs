@@ -1432,3 +1432,216 @@ async fn permission_allow_always_scope() {
     assert!(matches!(turn2.status, ananke_protocol::turn::TurnStatusDto::Completed),
         "Turn should be Completed in new session, got: {:?}", turn2.status);
 }
+
+/// 8. Mutating tool filesystem/shell permission check flow (E2E):
+/// - Mutating tool requires permission
+/// - Engine transitions to AwaitingTool and emits PermissionRequested
+/// - Client rejects via POST /api/session/{id}/permission/{id} with Deny
+/// - Turn resolves cleanly with permission denied
+#[tokio::test]
+async fn mutating_tool_filesystem_permission_denied_flow() {
+    let state = make_test_state().await;
+    let app = build(state.clone()).layer(from_fn(protocol_guard));
+
+    let session_id = create_session_helper(&app).await;
+
+    let provider = Arc::new(MockProviderWithToolCall::new());
+    let tools = make_mock_registry_with_tool();
+    let approval = ApprovalBroker::new(state.hub.clone(), state.store.clone());
+    let engine = Arc::new(Engine::new(
+        provider,
+        tools,
+        approval.clone() as Arc<dyn ananke_core::Approver>,
+        state.hub.clone() as Arc<dyn ananke_core::EventSink>,
+        state.store.clone() as Arc<dyn ananke_core::SessionStore>,
+    ));
+
+    let sessions = Arc::new(ananke_server::state::SessionRegistry::new());
+    let state_with_perm = ananke_server::state::AppState {
+        engine,
+        sessions,
+        approval,
+        ..state
+    };
+    let app_with_perm = build(state_with_perm).layer(from_fn(protocol_guard));
+
+    let turn_id = create_turn_helper(
+        &app_with_perm,
+        &session_id,
+        vec![ananke_protocol::InputPartDto::Text { text: "write file".to_owned() }],
+    ).await;
+
+    // Wait for permission request
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Read SSE events to grab permission_id
+    let resp_events = request(
+        &app_with_perm,
+        Method::GET,
+        &format!("/api/session/{session_id}/event?since=0"),
+        None,
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp_events.status(), StatusCode::OK);
+    let events = read_sse_events(resp_events, 20).await;
+
+    let perm_requested = events.iter()
+        .find(|e| matches!(e.payload, ananke_protocol::event::EventPayloadDto::PermissionRequested { .. }))
+        .expect("Should have permission.requested event for mutating tool");
+
+    let perm_id = if let ananke_protocol::event::EventPayloadDto::PermissionRequested { permission_id, .. } = &perm_requested.payload {
+        permission_id.clone()
+    } else {
+        panic!("Expected PermissionRequested");
+    };
+
+    // Client explicitly denies the permission
+    let deny_body = serde_json::to_string(&ananke_protocol::PermissionDecisionRequest {
+        decision: ananke_protocol::PermissionDecisionDto::Deny,
+        scope: None,
+    })
+    .unwrap();
+
+    let resp_resolve = request(
+        &app_with_perm,
+        Method::POST,
+        &format!("/api/session/{session_id}/permission/{perm_id}"),
+        Some(deny_body),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp_resolve.status(), StatusCode::NO_CONTENT, "Deny resolve should return 204");
+
+    // Wait for engine to handle the denial and conclude the turn
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let state_resp = request(
+        &app_with_perm,
+        Method::GET,
+        &format!("/api/session/{session_id}/state"),
+        None,
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(state_resp.status(), StatusCode::OK);
+    let state_dto: ananke_protocol::SessionStateDto = json_body(state_resp).await;
+
+    let turn = state_dto.turns.iter()
+        .find(|t| t.id == turn_id)
+        .expect("Turn should exist");
+    // When denied, engine finishes turn (Completed or Failed depending on policy, never hanging in AwaitingTool)
+    assert!(!matches!(turn.status, ananke_protocol::turn::TurnStatusDto::AwaitingTool),
+        "Turn must not remain in AwaitingTool after resolution, got: {:?}", turn.status);
+}
+
+/// 9. Dynamic permission_mode per session via PATCH /api/session/{id}:
+/// - Update session to ReadOnly mode
+/// - Mutating tool is denied outright by policy (no PermissionRequested event)
+#[tokio::test]
+async fn dynamic_session_permission_mode_patch() {
+    let state = make_test_state().await;
+    let app = build(state.clone()).layer(from_fn(protocol_guard));
+
+    let session_id = create_session_helper(&app).await;
+
+    // PATCH session to read-only mode
+    let patch_body = serde_json::to_string(&ananke_protocol::UpdateSessionRequest {
+        title: None,
+        model: None,
+        permission_mode: Some(ananke_protocol::PermissionModeDto::ReadOnly),
+    })
+    .unwrap();
+
+    let resp_patch = request(
+        &app,
+        Method::PATCH,
+        &format!("/api/session/{session_id}"),
+        Some(patch_body),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp_patch.status(), StatusCode::OK);
+
+    // Set up engine with mutating tool
+    let provider = Arc::new(MockProviderWithToolCall::new());
+    let tools = make_mock_registry_with_tool();
+    let approval = ApprovalBroker::new(state.hub.clone(), state.store.clone());
+    let engine = Arc::new(Engine::new(
+        provider,
+        tools,
+        approval.clone() as Arc<dyn ananke_core::Approver>,
+        state.hub.clone() as Arc<dyn ananke_core::EventSink>,
+        state.store.clone() as Arc<dyn ananke_core::SessionStore>,
+    ));
+
+    let sessions = Arc::new(ananke_server::state::SessionRegistry::new());
+    let state_with_perm = ananke_server::state::AppState {
+        engine,
+        sessions,
+        approval,
+        ..state
+    };
+    let app_with_perm = build(state_with_perm).layer(from_fn(protocol_guard));
+
+    let turn_id = create_turn_helper(
+        &app_with_perm,
+        &session_id,
+        vec![ananke_protocol::InputPartDto::Text { text: "write file in readonly".to_owned() }],
+    ).await;
+
+    // Wait for turn to process
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let resp_events = request(
+        &app_with_perm,
+        Method::GET,
+        &format!("/api/session/{session_id}/event?since=0"),
+        None,
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp_events.status(), StatusCode::OK);
+    let events = read_sse_events(resp_events, 20).await;
+
+    // In ReadOnly mode, mutating tool is denied outright; NO PermissionRequested event should be emitted
+    let perm_requested = events.iter()
+        .any(|e| matches!(e.payload, ananke_protocol::event::EventPayloadDto::PermissionRequested { .. }));
+    assert!(!perm_requested, "ReadOnly session must not emit PermissionRequested (auto-denied by policy)");
+
+    // The turn completes with the policy denial recorded
+    let state_resp = request(
+        &app_with_perm,
+        Method::GET,
+        &format!("/api/session/{session_id}/state"),
+        None,
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(state_resp.status(), StatusCode::OK);
+    let state_dto: ananke_protocol::SessionStateDto = json_body(state_resp).await;
+
+    let turn = state_dto.turns.iter()
+        .find(|t| t.id == turn_id)
+        .expect("Turn should exist");
+    assert!(matches!(turn.status, ananke_protocol::turn::TurnStatusDto::Completed),
+        "Turn should complete with policy rejection recorded, got: {:?}", turn.status);
+}

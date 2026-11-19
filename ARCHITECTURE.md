@@ -892,7 +892,7 @@ Một PR được coi là đúng kiến trúc khi:
 - [ ] Thay đổi protocol có cập nhật `openapi.json` và chạy lại codegen trong cùng PR.
 - [ ] Endpoint mới có test ở mức HTTP (không test core trực tiếp thay cho test protocol).
 - [ ] Event mới có `seq`, có test replay qua `since`.
-- [ ] Endpoint ghi dữ liệu có permission check nếu chạm filesystem/shell.
+- [x] Endpoint ghi dữ liệu có permission check nếu chạm filesystem/shell.
 - [ ] Không log secret; không trả API key qua bất kỳ response nào.
 - [ ] `part.delta` không được ghi vào event log; test khẳng định điều này.
 - [ ] Mọi giới hạn trong AD-15 có test: vượt cap trả `429`/`resource.throttled`, không bị OOM.
