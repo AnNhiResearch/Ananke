@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use ananke_core::{Engine, Session, SessionId, StoreError, TurnId, TurnStatus};
 use ananke_protocol::{LimitsDto, MetaResponse};
+use ananke_provider::DynamicModelRegistry;
 use ananke_store::SqliteStore;
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tokio::task::JoinHandle;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub approval: Arc<ApprovalBroker>,
     pub limits: Arc<RwLock<LimitsDto>>,
     pub meta: Arc<MetaResponse>,
+    pub models: Arc<AsyncMutex<DynamicModelRegistry>>,
     pub running_tasks: Arc<AsyncMutex<HashMap<TurnId, JoinHandle<()>>>>,
 }
 

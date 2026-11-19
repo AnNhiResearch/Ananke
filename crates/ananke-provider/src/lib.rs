@@ -10,7 +10,9 @@
 
 #![forbid(unsafe_code)]
 
+mod models;
 mod openai;
 mod sse;
 
+pub use models::{DynamicModelRegistry, ModelSpec, ModelsConfigFile};
 pub use openai::{OpenAiCompatConfig, OpenAiCompatProvider};

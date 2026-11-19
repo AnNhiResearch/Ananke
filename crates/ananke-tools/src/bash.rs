@@ -89,6 +89,13 @@ impl Tool for BashTool {
             ));
         }
 
+        if command.to_ascii_lowercase().contains("models.json") {
+            return ToolOutput::error(
+                "chính sách sandbox nghiêm cấm truy cập hoặc thao tác trên file `models.json` qua shell"
+                    .to_string(),
+            );
+        }
+
         let requested = opt_u64(&arguments, "timeout_ms")
             .map(Duration::from_millis)
             .unwrap_or(self.timeout);

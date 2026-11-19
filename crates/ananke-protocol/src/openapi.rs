@@ -13,8 +13,9 @@ use crate::error::ProblemDetails;
 use crate::event::{EventDto, EventPayloadDto};
 use crate::limits::{LimitsDto, PatchLimitsRequest};
 use crate::message::{MessageDto, RoleDto};
-use crate::meta::{DeviceProfileDto, MetaResponse, SandboxKindDto};
-use crate::part::{PartDto, PartKindDto};
+    use crate::meta::{DeviceProfileDto, MetaResponse, SandboxKindDto};
+    use crate::model::{ListModelsResponse, ModelDto, RegisterModelRequest};
+    use crate::part::{PartDto, PartKindDto};
 use crate::permission::{
     PermissionDecisionDto, PermissionDecisionRequest, PermissionModeDto, PermissionScopeDto,
 };
@@ -58,6 +59,9 @@ use crate::turn::{
         PartKindDto,
         MessageDto,
         RoleDto,
+        ModelDto,
+        ListModelsResponse,
+        RegisterModelRequest,
         PermissionModeDto,
         PermissionDecisionDto,
         PermissionScopeDto,

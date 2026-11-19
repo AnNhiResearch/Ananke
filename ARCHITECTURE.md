@@ -115,9 +115,9 @@ Cùng một protocol chạy trên bốn transport:
 
 | Transport | Dùng cho | Đặc điểm |
 |---|---|---|
-| **UDS / named pipe** (mặc định) | TUI, desktop app, CLI, embedded tooling | Không mở port, không cần token, quyền `0600`; Windows: `\\.\pipe\ananke-<user>` |
-| **TCP loopback** (`--listen 127.0.0.1:4096`) | Web client, browser SDK, công cụ ngoài | Cần bearer token + CORS allowlist |
-| **TCP public** (`--listen 0.0.0.0:4096 --tls-*`) | Remote dev, CI runner, dịch vụ nội bộ, **điện thoại qua pairing** | Bắt buộc TLS + auth; pairing cấp device token riêng (AD-18) |
+| **UDS / named pipe** (mặc định production) | TUI, desktop app, CLI, embedded tooling | Không mở port, không cần token, quyền `0600`; Windows: `\\.\pipe\ananke-<user>` |
+| **TCP loopback** (`127.0.0.1:9876`) | Web client, TUI dev, browser SDK, công cụ ngoài | Thống nhất port `127.0.0.1:9876` cho local HTTP/SSE service |
+| **TCP public** (`--listen 0.0.0.0:9876 --tls-*`) | Remote dev, CI runner, dịch vụ nội bộ, **điện thoại qua pairing** | Bắt buộc TLS + auth; pairing cấp device token riêng (AD-18) |
 | **In-process** | Test, `ananke-embedded`, client third-party chạy cùng process | Router chạy trong cùng process, không serialize qua socket |
 
 Discovery: `~/.ananke/service.json`

@@ -234,6 +234,7 @@ async fn make_test_state() -> AppState {
         approval,
         limits,
         meta,
+        models: Arc::new(tokio::sync::Mutex::new(ananke_provider::DynamicModelRegistry::new())),
         running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     }
 }
@@ -291,6 +292,7 @@ async fn make_test_state_holding() -> AppState {
         approval,
         limits,
         meta,
+        models: Arc::new(tokio::sync::Mutex::new(ananke_provider::DynamicModelRegistry::new())),
         running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     }
 }
@@ -610,6 +612,7 @@ async fn part_delta_khong_persist_trong_replay() {
         approval,
         limits,
         meta,
+        models: Arc::new(tokio::sync::Mutex::new(ananke_provider::DynamicModelRegistry::new())),
         running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let app_with_delta = build(state_with_delta).layer(from_fn(protocol_guard));
@@ -1644,4 +1647,66 @@ async fn dynamic_session_permission_mode_patch() {
         .expect("Turn should exist");
     assert!(matches!(turn.status, ananke_protocol::turn::TurnStatusDto::Completed),
         "Turn should complete with policy rejection recorded, got: {:?}", turn.status);
+}
+
+#[tokio::test]
+async fn test_models_api_list_and_register() {
+    let state = make_test_state().await;
+    let app = build(state).layer(from_fn(protocol_guard));
+
+    // 1. GET /api/models lúc đầu rỗng
+    let resp = request(
+        &app,
+        Method::GET,
+        "/api/models",
+        None,
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list: ananke_protocol::ListModelsResponse = json_body(resp).await;
+    assert_eq!(list.models.len(), 0);
+
+    // 2. POST /api/models đăng ký model mới
+    let reg_req = serde_json::json!({
+        "id": "deepseek-coder",
+        "name": "DeepSeek Coder V2",
+        "baseUrl": "https://api.deepseek.com",
+        "contextWindow": 64000
+    });
+    let post_resp = request(
+        &app,
+        Method::POST,
+        "/api/models",
+        Some(reg_req.to_string()),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(post_resp.status(), StatusCode::CREATED);
+
+    // 3. GET /api/models kiểm tra model đã xuất hiện
+    let resp2 = request(
+        &app,
+        Method::GET,
+        "/api/models",
+        None,
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let list2: ananke_protocol::ListModelsResponse = json_body(resp2).await;
+    assert_eq!(list2.models.len(), 1);
+    assert_eq!(list2.models[0].id, "deepseek-coder");
+    assert_eq!(list2.models[0].name, "DeepSeek Coder V2");
+    assert_eq!(list2.models[0].base_url, "https://api.deepseek.com");
+    assert_eq!(list2.models[0].context_window, Some(64000));
 }

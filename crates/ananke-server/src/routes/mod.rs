@@ -3,6 +3,7 @@
 
 pub mod limits;
 pub mod meta;
+pub mod models;
 pub mod permission;
 pub mod session;
 pub mod sse;

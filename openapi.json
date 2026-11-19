@@ -501,6 +501,21 @@
           }
         }
       },
+      "ListModelsResponse": {
+        "type": "object",
+        "description": "Danh sách model được trả về cho client.",
+        "required": [
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelDto"
+            }
+          }
+        }
+      },
       "MessageDto": {
         "type": "object",
         "required": [
@@ -555,6 +570,40 @@
             "description": "Giá trị đo lúc start, không phải lời hứa cấu hình (§7.2)."
           },
           "serverVersion": {
+            "type": "string"
+          }
+        }
+      },
+      "ModelDto": {
+        "type": "object",
+        "description": "Thông tin mô tả một model mà client có thể sử dụng.",
+        "required": [
+          "id",
+          "name",
+          "baseUrl"
+        ],
+        "properties": {
+          "baseUrl": {
+            "type": "string"
+          },
+          "contextWindow": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "maxTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "name": {
             "type": "string"
           }
         }
@@ -828,6 +877,54 @@
           "type": {
             "type": "string",
             "description": "URI nhận dạng loại lỗi; mặc định `about:blank`."
+          }
+        }
+      },
+      "RegisterModelRequest": {
+        "type": "object",
+        "description": "Yêu cầu đăng ký hoặc thêm model mới từ client.",
+        "required": [
+          "id",
+          "baseUrl"
+        ],
+        "properties": {
+          "apiKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "apiKeyEnv": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "contextWindow": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "maxTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

@@ -6,3 +6,5 @@
 # trạng thái cục bộ của agent harness
 /.freebuff
 /.screenshots
+/ananke.db*
+/models.json

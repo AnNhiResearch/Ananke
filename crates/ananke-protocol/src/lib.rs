@@ -16,6 +16,7 @@ pub mod event;
 pub mod limits;
 pub mod meta;
 pub mod message;
+pub mod model;
 pub mod openapi;
 pub mod part;
 pub mod permission;
@@ -27,6 +28,7 @@ pub use event::{EventDto, EVENT_TYPES};
 pub use limits::{LimitsDto, PatchLimitsRequest};
 pub use meta::{DeviceProfileDto, MetaResponse, SandboxKindDto};
 pub use message::{MessageDto, RoleDto};
+pub use model::{ListModelsResponse, ModelDto, RegisterModelRequest};
 pub use part::{PartDto, PartKindDto};
 pub use permission::{
     PermissionDecisionDto, PermissionDecisionRequest, PermissionModeDto, PermissionScopeDto,

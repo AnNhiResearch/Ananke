@@ -15,6 +15,10 @@ pub fn build(state: AppState) -> Router {
     let api = Router::new()
         .route("/meta", get(routes::meta::get_meta))
         .route(
+            "/models",
+            get(routes::models::list_models).post(routes::models::register_model),
+        )
+        .route(
             "/limits",
             get(routes::limits::get_limits).patch(routes::limits::patch_limits),
         )

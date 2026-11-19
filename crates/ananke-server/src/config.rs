@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 
 /// Địa chỉ bind mặc định khi không có `ANANKE_BIND`.
-pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
+pub const DEFAULT_BIND: &str = "127.0.0.1:9876";
 /// Đường dẫn SQLite mặc định khi không có `ANANKE_DB`.
 pub const DEFAULT_DB: &str = "ananke.db";
 /// Model mặc định khi không có `ANANKE_MODEL`.

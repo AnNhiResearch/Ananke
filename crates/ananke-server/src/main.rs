@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let tools = Arc::new(tools);
 
     let engine = Arc::new(Engine::new(
-        provider,
+        Arc::clone(&provider),
         tools,
         Arc::clone(&approval) as Arc<dyn Approver>,
         Arc::clone(&hub) as Arc<dyn EventSink>,
@@ -59,6 +59,22 @@ async fn main() -> anyhow::Result<()> {
         dto::device_profile_dto(ananke_sandbox::device_profile()),
     )));
 
+    let mut model_registry = ananke_provider::DynamicModelRegistry::new()
+        .with_default_provider(Arc::clone(&provider));
+    // Tự động tạo models.json mặc định nếu chưa tồn tại, sau đó nạp
+    let models_path = std::path::Path::new("models.json");
+    if !models_path.exists() {
+        let default_content = r#"{
+  "models": []
+}
+"#;
+        if let Err(e) = std::fs::write(models_path, default_content) {
+            eprintln!("cảnh báo: không thể tạo models.json mặc định: {e}");
+        }
+    }
+    let _ = model_registry.load_file(models_path);
+    let models = Arc::new(tokio::sync::Mutex::new(model_registry));
+
     let state = AppState {
         config: Arc::new(config.clone()),
         engine,
@@ -68,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
         approval,
         limits,
         meta: Arc::new(dto::meta_response()),
+        models,
         running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 

@@ -41,6 +41,8 @@ pub enum PolicyError {
     OutsideRoot(PathBuf),
     #[error("đường dẫn `{}` không hợp lệ", .0.display())]
     Invalid(PathBuf),
+    #[error("truy cập file cấu hình `{}` bị nghiêm cấm bởi chính sách sandbox", .0.display())]
+    Blocked(PathBuf),
 }
 
 /// Policy bất biến, chia sẻ giữa các tool bằng `Arc`.
@@ -127,16 +129,19 @@ impl ToolPolicy {
         self.network || self.mode == PolicyMode::DangerFullAccess
     }
 
-    /// Resolve đường dẫn đọc. Đọc không bị giới hạn theo root; permission rules
-    /// (§7.3) chịu trách nhiệm chặn vùng nhạy cảm.
+    /// Resolve đường dẫn đọc. Chặn truy cập file cấu hình nhạy cảm `models.json`.
     pub fn resolve_read(&self, raw: &str) -> Result<PathBuf, PolicyError> {
         let abs = absolute(&self.base, Path::new(raw));
         let normalized = normalize(&abs).ok_or_else(|| PolicyError::Invalid(abs.clone()))?;
-        Ok(canonicalize_best_effort(&normalized))
+        let resolved = canonicalize_best_effort(&normalized);
+        if is_blocked_file(&resolved) {
+            return Err(PolicyError::Blocked(resolved));
+        }
+        Ok(resolved)
     }
 
     /// Resolve đường dẫn ghi: chuẩn hoá, giải symlink của phần đã tồn tại, rồi
-    /// kiểm tra nằm trong `writable_roots`.
+    /// kiểm tra nằm trong `writable_roots` và không phải file bị cấm.
     pub fn resolve_write(&self, raw: &str) -> Result<PathBuf, PolicyError> {
         if !self.allows_mutation() {
             return Err(PolicyError::ReadOnly);
@@ -144,6 +149,9 @@ impl ToolPolicy {
         let abs = absolute(&self.base, Path::new(raw));
         let normalized = normalize(&abs).ok_or_else(|| PolicyError::Invalid(abs.clone()))?;
         let resolved = canonicalize_best_effort(&normalized);
+        if is_blocked_file(&resolved) {
+            return Err(PolicyError::Blocked(resolved));
+        }
         if self.mode == PolicyMode::WorkspaceWrite
             && !self
                 .writable_roots
@@ -154,6 +162,14 @@ impl ToolPolicy {
         }
         Ok(resolved)
     }
+}
+
+/// Kiểm tra đường dẫn trỏ tới file nhạy cảm cần bảo vệ (vd: `models.json`).
+fn is_blocked_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.eq_ignore_ascii_case("models.json"))
+        .unwrap_or(false)
 }
 
 fn absolute(base: &Path, path: &Path) -> PathBuf {

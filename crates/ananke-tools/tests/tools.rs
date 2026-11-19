@@ -273,3 +273,43 @@ fn mutating_chi_dung_cho_tool_thay_doi_trang_thai() {
 
     cleanup(&dir);
 }
+
+#[tokio::test]
+async fn sandbox_cam_doc_ghi_va_shell_models_json() {
+    let dir = workspace("sandbox_models_protect");
+    let policy = policy(&dir);
+
+    let read_tool = ReadTool::new(Arc::clone(&policy));
+    let write_tool = WriteTool::new(Arc::clone(&policy));
+    let bash_tool = BashTool::new(Arc::clone(&policy));
+
+    // 1. Thử ghi models.json -> bị chặn
+    let write_res = write_tool
+        .execute(serde_json::json!({
+            "path": "models.json",
+            "content": "{}"
+        }))
+        .await;
+    assert!(!write_res.ok);
+    assert!(write_res.content.contains("chính sách sandbox"));
+
+    // 2. Thử đọc models.json -> bị chặn
+    let read_res = read_tool
+        .execute(serde_json::json!({
+            "path": "models.json"
+        }))
+        .await;
+    assert!(!read_res.ok);
+    assert!(read_res.content.contains("chính sách sandbox"));
+
+    // 3. Thử qua shell command nhắc tới models.json -> bị chặn
+    let bash_res = bash_tool
+        .execute(serde_json::json!({
+            "command": "cat models.json"
+        }))
+        .await;
+    assert!(!bash_res.ok);
+    assert!(bash_res.content.contains("chính sách sandbox"));
+
+    cleanup(&dir);
+}
