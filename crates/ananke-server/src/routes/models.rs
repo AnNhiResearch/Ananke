@@ -49,6 +49,7 @@ pub async fn register_model(
         context_window: body.context_window,
         max_tokens: body.max_tokens,
         headers: std::collections::HashMap::new(),
+        extra_body: Default::default(),
     };
 
     let mut registry = state.models.lock().await;

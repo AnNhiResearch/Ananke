@@ -16,6 +16,8 @@ Developed by **AnNhi Research**, **AnNhi AI**, and **contributors of Ananke**.
 - Runtime sandbox capability reporting: Landlock, Seatbelt, Restricted Token, or `none`.
 - Built-in tools: `bash`, `read`, `write`, `edit`, `grep`, and `glob`.
 - OpenAI-compatible provider with SSE streaming.
+- Reasoning/thinking streams surfaced as events (mapped from `reasoning` / `reasoning_content` deltas).
+- Per-model `extraBody` passthrough for provider-specific request options (e.g. `reasoning_effort`).
 - Headless-first design: TUI, desktop, web, and mobile are independent clients.
 
 ## Architecture
@@ -85,6 +87,26 @@ Main endpoints:
 | `POST` | `/api/session/{id}/permission/{permissionID}` | Respond to an approval request |
 
 API errors use `application/problem+json` according to RFC 9457.
+
+## Model configuration
+
+Models are declared in `models.json` (loaded at server startup from the working directory):
+
+```json
+{
+  "models": [
+    {
+      "id": "agnes-3.0-flash",
+      "name": "agnes-3.0-flash",
+      "baseUrl": "https://apihub.agnes-ai.com/v1",
+      "apiKey": "<provider-api-key>",
+      "extraBody": { "reasoning_effort": "medium" }
+    }
+  ]
+}
+```
+
+`extraBody` is optional and is merged verbatim into the upstream `/chat/completions` request body. It is the supported way to turn on provider-specific options such as `reasoning_effort`, `thinking: { "type": "enabled" }`, or `enable_thinking` for OpenAI-compatible providers that only emit reasoning when explicitly asked, and it works for both streaming and non-streaming requests.
 
 ## Checks
 

@@ -17,17 +17,21 @@ pub struct ModelSpec {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(alias = "baseUrl")]
     pub base_url: String,
-    #[serde(default)]
+    #[serde(default, alias = "apiKey")]
     pub api_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "apiKeyEnv")]
     pub api_key_env: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "contextWindow")]
     pub context_window: Option<usize>,
-    #[serde(default)]
+    #[serde(default, alias = "maxTokens")]
     pub max_tokens: Option<usize>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Field bổ sung gửi kèm mọi request tới model này (ví dụ `reasoning_effort`).
+    #[serde(default, alias = "extraBody")]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ModelSpec {
@@ -57,7 +61,33 @@ impl ModelSpec {
         for (k, v) in &self.headers {
             config = config.with_header(k, v);
         }
+        config = config.with_extra_body(self.extra_body.clone());
         OpenAiCompatProvider::new(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_models_json_camel_case() {
+        let json = r#"{
+            "models": [
+                {
+                    "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+                    "name": "NVIDIA Nemotron 3 Ultra 550B",
+                    "baseUrl": "https://ai-gateway.kilo.ai/api/v1",
+                    "apiKey": "test-key-123"
+                }
+            ]
+        }"#;
+        let config = ModelsConfigFile::from_json_str(json).unwrap();
+        assert_eq!(config.models.len(), 1);
+        let m = &config.models[0];
+        assert_eq!(m.id, "nvidia/nemotron-3-ultra-550b-a55b:free");
+        assert_eq!(m.base_url, "https://ai-gateway.kilo.ai/api/v1");
+        assert_eq!(m.resolve_api_key(), Some("test-key-123".to_string()));
     }
 }
 

@@ -5,7 +5,7 @@ use ananke_core::{
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::sse;
 
@@ -20,6 +20,8 @@ pub struct OpenAiCompatConfig {
     pub api_key: Option<String>,
     /// Header phụ (ví dụ `HTTP-Referer` cho OpenRouter).
     pub headers: Vec<(String, String)>,
+    /// Field bổ sung gộp vào body request (ví dụ bật reasoning cho từng model).
+    pub extra_body: Map<String, Value>,
 }
 
 impl OpenAiCompatConfig {
@@ -28,6 +30,7 @@ impl OpenAiCompatConfig {
             base_url: base_url.into(),
             api_key: None,
             headers: Vec::new(),
+            extra_body: Map::new(),
         }
     }
 
@@ -38,6 +41,13 @@ impl OpenAiCompatConfig {
 
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    pub fn with_extra_body(mut self, extra: Map<String, Value>) -> Self {
+        for (key, value) in extra {
+            self.extra_body.insert(key, value);
+        }
         self
     }
 }
@@ -69,11 +79,14 @@ impl OpenAiCompatProvider {
 #[async_trait]
 impl ModelProvider for OpenAiCompatProvider {
     async fn stream(&self, request: ProviderRequest) -> Result<ProviderStream, ProviderError> {
-        let url = format!(
-            "{}/v1/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        );
-        let body = build_body(&request);
+        let base = self.config.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/v1") {
+            format!("{base}/chat/completions")
+        } else {
+            format!("{base}/v1/chat/completions")
+        };
+        let mut body = build_body(&request);
+        apply_extra_body(&mut body, &self.config.extra_body);
 
         let mut builder = self.http.post(&url).json(&body);
         if let Some(key) = self.config.api_key.as_deref() {
@@ -129,6 +142,16 @@ fn build_body(request: &ProviderRequest) -> Value {
     }
 
     body
+}
+
+/// Gộp các field bổ sung (ví dụ `reasoning_effort`) vào body request.
+fn apply_extra_body(body: &mut Value, extra: &Map<String, Value>) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+    for (key, value) in extra {
+        map.insert(key.clone(), value.clone());
+    }
 }
 
 /// Một [`Message`] của core có thể sinh nhiều message OpenAI (mỗi tool result là một).

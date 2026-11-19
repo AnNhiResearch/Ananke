@@ -1,11 +1,12 @@
-import EventSource from "eventsource";
+import * as EventSourceModule from "eventsource";
+const EventSource = (EventSourceModule as any).EventSource || (EventSourceModule as any).default || EventSourceModule;
 
 export interface MetaInfo {
   protocolVersion: number;
   capabilities: string[];
   serverVersion: string;
   deviceProfile: string;
-  sandbox: string;
+  sandbox: "none" | "restricted-token" | "full";
 }
 
 export interface SessionResponse {
@@ -26,8 +27,20 @@ export interface EventItem {
   [key: string]: any;
 }
 
+export interface ModelItem {
+  id: string;
+  name: string;
+  provider: string;
+  description?: string;
+  contextWindow?: number;
+}
+
 export class AnankeClient {
   private baseUrl: string;
+  private lastEventSeq = 0;
+  private eventSource: EventSource | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private shouldReconnect = true;
 
   constructor(baseUrl: string = "http://127.0.0.1:9876") {
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -51,10 +64,21 @@ export class AnankeClient {
     return (await res.json()) as MetaInfo;
   }
 
+  async listModels(): Promise<ModelItem[]> {
+    const res = await fetch(`${this.baseUrl}/api/models`, {
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch models: ${res.status} ${res.statusText}`);
+    }
+    const data = await res.json();
+    return (data.models || []) as ModelItem[];
+  }
+
   async createSession(
     workspace: string = process.cwd(),
     model: string = "default"
-  ): Promise<string> {
+  ): Promise<SessionResponse> {
     const res = await fetch(`${this.baseUrl}/api/session`, {
       method: "POST",
       headers: this.headers(),
@@ -64,8 +88,21 @@ export class AnankeClient {
       const errText = await res.text().catch(() => "");
       throw new Error(`Failed to create session: ${res.status} ${res.statusText} ${errText}`);
     }
-    const data = (await res.json()) as SessionResponse;
-    return data.id;
+    return (await res.json()) as SessionResponse;
+  }
+
+  async updateSession(
+    sessionId: string,
+    update: { permissionMode?: string; model?: string }
+  ): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/session/${sessionId}`, {
+      method: "PATCH",
+      headers: this.headers(),
+      body: JSON.stringify(update),
+    });
+    if (!res.ok && res.status !== 204) {
+      throw new Error(`Failed to update session: ${res.status}`);
+    }
   }
 
   async sendTurn(sessionId: string, text: string): Promise<string> {
@@ -83,12 +120,12 @@ export class AnankeClient {
     return data.id;
   }
 
-  async resolvePermission(sessionId: string, permissionId: string, allow: boolean): Promise<void> {
+  async resolvePermission(sessionId: string, permissionId: string, decision: "allow" | "deny" | "always"): Promise<void> {
     const res = await fetch(`${this.baseUrl}/api/session/${sessionId}/permission/${permissionId}`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
-        decision: allow ? "allow" : "deny",
+        decision,
       }),
     });
     if (!res.ok && res.status !== 204) {
@@ -109,27 +146,63 @@ export class AnankeClient {
   subscribeEvents(
     sessionId: string,
     onEvent: (event: EventItem) => void,
-    onError: (err: any) => void,
-    since: number = 0
-  ): EventSource {
-    const url = `${this.baseUrl}/api/session/${sessionId}/event?since=${since}`;
-    const es = new EventSource(url, {
-      headers: { "X-Ananke-Protocol": "1" },
-    });
+    onError: (err: any) => void
+  ): () => void {
+    this.shouldReconnect = true;
 
-    es.onmessage = (msg: MessageEvent) => {
-      try {
-        const parsed = JSON.parse(msg.data) as EventItem;
-        onEvent(parsed);
-      } catch (e) {
-        onError(e);
+    const connect = () => {
+      if (!this.shouldReconnect) return;
+      const url = `${this.baseUrl}/api/session/${sessionId}/event?since=${this.lastEventSeq}`;
+      // eventsource@2 tự dựng request bằng http/https và KHÔNG hỗ trợ option `fetch`.
+      // Header phải truyền qua `headers`, nếu không server trả 426 protocol_mismatch.
+      // `Last-Event-ID` được thư viện tự gắn từ options này vào request.
+      const headers: Record<string, string> = { "X-Ananke-Protocol": "1" };
+      if (this.lastEventSeq > 0) {
+        headers["Last-Event-ID"] = String(this.lastEventSeq);
+      }
+
+      const es = new EventSource(url, { headers } as any);
+
+      this.eventSource = es;
+
+      es.onmessage = (msg: MessageEvent) => {
+        try {
+          const parsed = JSON.parse(msg.data) as EventItem;
+          // Cập nhật seq nhưng không drop event broadcast không có seq hoặc seq lặp lại
+          if (parsed.seq !== undefined && parsed.seq > this.lastEventSeq) {
+            this.lastEventSeq = parsed.seq;
+          }
+          onEvent(parsed);
+        } catch (e) {
+          onError(e);
+        }
+      };
+
+      es.onerror = (err: any) => {
+        onError(err);
+        es.close();
+        this.eventSource = null;
+        if (this.shouldReconnect && this.reconnectTimer === null) {
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            connect();
+          }, 2000); // Tự động reconnect sau 2 giây với seq mới nhất
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      this.shouldReconnect = false;
+      if (this.reconnectTimer !== null) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (this.eventSource) {
+        this.eventSource.close();
+        this.eventSource = null;
       }
     };
-
-    es.onerror = (err: any) => {
-      onError(err);
-    };
-
-    return es;
   }
 }

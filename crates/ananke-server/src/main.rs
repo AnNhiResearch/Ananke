@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
             base_url,
             api_key: config.api_key.clone(),
             headers: Vec::new(),
+            extra_body: Default::default(),
         })),
         None => Arc::new(OpenAiCompatProvider::kilo()),
     };
@@ -47,8 +48,40 @@ async fn main() -> anyhow::Result<()> {
     )?;
     let tools = Arc::new(tools);
 
+    let mut model_registry = ananke_provider::DynamicModelRegistry::new()
+        .with_default_provider(Arc::clone(&provider));
+    // Tự động tìm models.json từ thư mục hiện tại hoặc các thư mục tổ tiên
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut models_path = current_dir.join("models.json");
+    if !models_path.exists() {
+        let mut curr = current_dir.as_path();
+        while let Some(parent) = curr.parent() {
+            let candidate = parent.join("models.json");
+            if candidate.exists() {
+                models_path = candidate;
+                break;
+            }
+            curr = parent;
+        }
+    }
+
+    if !models_path.exists() {
+        let default_content = r#"{
+  "models": []
+}
+"#;
+        if let Err(e) = std::fs::write(&models_path, default_content) {
+            eprintln!("cảnh báo: không thể tạo models.json mặc định: {e}");
+        }
+    }
+    match model_registry.load_file(&models_path) {
+        Ok(count) => println!("Đã nạp {count} model từ {}", models_path.display()),
+        Err(e) => eprintln!("Lỗi nạp {}: {e}", models_path.display()),
+    }
+    let models_reg_arc = Arc::new(model_registry);
+
     let engine = Arc::new(Engine::new(
-        Arc::clone(&provider),
+        Arc::clone(&models_reg_arc) as Arc<dyn ModelProvider>,
         tools,
         Arc::clone(&approval) as Arc<dyn Approver>,
         Arc::clone(&hub) as Arc<dyn EventSink>,
@@ -59,21 +92,7 @@ async fn main() -> anyhow::Result<()> {
         dto::device_profile_dto(ananke_sandbox::device_profile()),
     )));
 
-    let mut model_registry = ananke_provider::DynamicModelRegistry::new()
-        .with_default_provider(Arc::clone(&provider));
-    // Tự động tạo models.json mặc định nếu chưa tồn tại, sau đó nạp
-    let models_path = std::path::Path::new("models.json");
-    if !models_path.exists() {
-        let default_content = r#"{
-  "models": []
-}
-"#;
-        if let Err(e) = std::fs::write(models_path, default_content) {
-            eprintln!("cảnh báo: không thể tạo models.json mặc định: {e}");
-        }
-    }
-    let _ = model_registry.load_file(models_path);
-    let models = Arc::new(tokio::sync::Mutex::new(model_registry));
+    let models = Arc::new(tokio::sync::Mutex::new((*models_reg_arc).clone()));
 
     let state = AppState {
         config: Arc::new(config.clone()),

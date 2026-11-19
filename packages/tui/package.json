@@ -1,7 +1,7 @@
 {
   "name": "@ananke/tui",
   "version": "0.1.0",
-  "description": "Official TypeScript TUI client for Ananke agent runtime",
+  "description": "Official TypeScript TUI client for Ananke agent runtime with differential rendering (AD-12)",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -9,10 +9,12 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "bun test",
+    "check": "tsc --noEmit",
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts"
   },
-  "keywords": ["ananke", "tui", "agent", "terminal"],
+  "keywords": ["ananke", "tui", "agent", "terminal", "differential-rendering"],
   "author": "AnNhi Research & AnNhi AI & contributors of Ananke",
   "license": "MIT",
   "dependencies": {
