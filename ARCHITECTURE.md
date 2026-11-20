@@ -517,6 +517,7 @@ slice: nạp state → 1 model completion → persist part → dispatch tool →
 | 4 | `AGENTS.md` trong thư mục con của file mà tool vừa chạm | thắng |
 
 - Tương thích: chỉ đọc `CLAUDE.md` khi **không** có `AGENTS.md` trong cùng thư mục. Không đọc `.cursorrules`, không quét `*.md` ở root — đọc ngầm file lạ chính là cách một repo bơm chỉ thị vào model.
+- Nguồn thứ năm, khác bản chất: **chỉ mục skill** (`name` + mô tả một dòng), không phải thân `SKILL.md`, và nằm trong ngân sách byte **riêng** — xem AD-27.
 - `system` **không** được append vào `Session::messages()`. Nó được dựng lại trong `Engine::model_step` mỗi lượt, vì transcript là thứ được persist, replay (`since`), và resume — nhét system vào đó thì mỗi lượt gửi lại thêm một bản nữa.
 - **Ngân sách:** `max_instructions_bytes` = 32_000 (`constrained`: 12_000), `max_instruction_files` = 8. Vượt → cắt từ ưu tiên **thấp nhất** trước (global trước, subdir cuối) và ghi `instructions.truncated: true` vào system để model biết mình đang thiếu, thay vì đoán.
 - **Nạp lại:** cache theo `(path, len, mtime)`; đổi file → nạp lại ở ranh giới turn, phát `instructions.loaded {files, bytes, truncated, changed}`. Trên `constrained` **không** watch file (AD-15 tắt watch) — chỉ so mtime khi turn bắt đầu.
@@ -638,6 +639,42 @@ slice: nạp state → 1 model completion → persist part → dispatch tool →
 - Kênh approval riêng cho sub-agent: hai đường approval là hai chỗ để quên kiểm tra scope.
 - Con chạy như process riêng: ~30–40 MB mỗi con, không đổi lấy gì ở M3 — cô lập quyền đã đạt bằng registry ∩ allowlist.
 - Chờ người approve trong CI: turn treo vô hạn trong pipeline, tệ hơn một summary `blocked`.
+
+---
+
+### AD-27 — `SKILL.md`: hướng dẫn nạp theo nhu cầu, không phải plugin
+
+**Quyết định.** Skill là **thư mục chứa `SKILL.md`**, không phải code, không phải plugin:
+
+```
+.ananke/skills/<name>/SKILL.md      # project
+~/.config/ananke/skills/<name>/    # user
+```
+
+`SKILL.md` = YAML front matter (`name`, `description`) + body markdown. `name` khớp `[a-z0-9][a-z0-9-_]{0,63}`; thiếu front matter thì `description` lấy câu đầu của body, kèm cảnh báo — không từ chối cả file.
+
+- **Chỉ mục, không phải toàn văn.** System message chỉ chứa **chỉ mục**: mỗi skill một dòng `name — description` (~100 byte). Thân `SKILL.md` chỉ vào context khi model gọi tool `skill`. Cùng nguyên tắc với AD-25/AD-26: chi phí tỉ lệ với số skill **đã dùng**, không phải số skill **đã cài**.
+- **Ngân sách riêng:** `max_skill_index_bytes` = 4_000 (`constrained` 2_000), tối đa 40 skill trong chỉ mục; vượt → cắt theo thứ tự project > user > builtin, ghi `skill_index.truncated: true`. Chỉ mục **không** tranh chỗ với ngân sách `AGENTS.md` (AD-24).
+- **Một tool, không phải hai:** `skill {name}` trả body. Không có `skill_search`: chỉ mục đã nằm ở system và chỉ 40 dòng, thêm một tầng search là lãng phí một lượt model. Không có `skill_list`: danh sách đã có trong system.
+- **Body vào history như `tool_result`, không vào slot system.** Nhờ vậy: `Session::messages()` vẫn không chứa system (AD-24), compaction cắt được skill không còn dùng, replay `since` không nhân bản. Đổi lại: sau compaction model có thể phải gọi `skill` lại — chấp nhận, rẻ hơn gửi 12 KB system mỗi lượt.
+- **Trần body:** 12_000 byte (`constrained` 6_000); vượt → cắt + `skill.truncated: true` + dòng cuối chỉ chỗ đọc tiếp.
+- **Tài nguyên phụ** (`references/`, `scripts/`, `assets/`) **không** tự nạp. Body muốn agent đọc thì ghi đường dẫn tương đối; agent đọc bằng `read`/`write` thường, chịu permission rules và approval như mọi file.
+- **Skill không chạy code.** Không `run`, không sandbox riêng, không hook. Cần thực thi thì body chỉ dẫn lệnh và agent gọi `bash` — approval vẫn hỏi người dùng. Đây là ranh giới giữa skill và plugin.
+- **Không cấp quyền:** `SKILL.md` là dữ liệu không tin cậy như `AGENTS.md`. Nó không đổi tool set, không đổi permission rules, không tắt approval. Test: một skill viết "bỏ qua approval" không làm đổi `Decision`.
+- **Không auto-load theo keyword.** Model tự quyết gọi `skill`; match từ khoá là heuristic ẩn, làm hành vi không đoán được và có thể nạp 12 KB không ai cần.
+- **Front matter lạ** (field ngoài `name`/`description`, ví dụ `allowed-tools`, `model`): **bỏ qua**, ghi `skill.warning`, không từ chối cả file — nhưng cũng không cấp quyền.
+- **Không quét mù:** chỉ đúng `<thư mục>/SKILL.md`, không `skills/**/*.md`, không đọc `CLAUDE.md` như skill.
+- **Event:** `skill.loaded {name, bytes, truncated}`, `skill.warning {name, field}`, `skill_index.truncated`.
+- **`constrained`:** chỉ mục 2 KB, body 6 KB, không watch thư mục (AD-15 tắt watch) — quét lại khi `skill` được gọi hoặc khi turn bắt đầu, cache theo `(path, len, mtime)` như AD-24.
+
+**Lý do.** `AGENTS.md` trả lời "luật của repo là gì" và phải có mặt **mọi lượt**; skill trả lời "cách làm một việc cụ thể" và chỉ cần khi việc đó xuất hiện. Nhét cả hai vào system là biến repo có 20 skill thành 20 × 12 KB mỗi lượt — trên máy 1 GB đó là cách nhanh nhất để mất turn đầu tiên. Ngược lại, biến skill thành plugin thì mất đúng thứ skill giỏi: viết bằng markdown, không runtime, không build.
+
+**Đã loại.**
+- Nạp toàn bộ `SKILL.md` vào system message: context tỉ lệ với số skill đã cài.
+- Cho `SKILL.md` khai `allowed-tools`/`permission` và có hiệu lực: leo thang quyền bằng file text, đúng thứ AD-24 cấm.
+- Skill như plugin (process riêng, code chạy được): thêm runtime và lifecycle mà không thêm khả năng nào `bash` + `read` chưa có.
+- Auto-load theo từ khoá trong prompt người dùng: hành vi ẩn, khó debug, dễ nạp nhầm.
+- Tải skill từ URL/registry: cùng lý do với plugin (AD-20) — nguồn duy nhất là đường dẫn cục bộ.
 
 ---
 
@@ -980,7 +1017,7 @@ ananke/
   crates/
     ananke-core/                 # agent loop, context, instructions (AD-24), compaction, resource limits / admission
     ananke-provider/             # adapter: Responses API, Anthropic, OpenAI-compatible
-    ananke-tools/                # bash, read, write, edit, grep, glob, task, skill
+    ananke-tools/                # bash, read, write, edit, grep, glob, task, skill (chỉ nạp body, AD-27)
     ananke-sandbox/              # seatbelt / landlock / windows, phát hiện năng lực
     ananke-store/                # SQLite, migrations, event log, retention
     ananke-protocol/             # DTO + schema + codegen bin
@@ -1016,7 +1053,7 @@ ananke/
 |---|---|---|
 | **M0 — Skeleton** | workspace crates, protocol type, router `/api/meta`, session CRUD, một provider, tool `bash`/`read`, SQLite, profile thiết bị + `/api/limits`, phát hiện năng lực sandbox, build `aarch64-linux-android` | `curl` tạo session và chạy được 1 turn; `openapi.json` sinh ra và commit; `/api/meta` báo đúng `deviceProfile` và `sandbox` trên máy test |
 | **M1 — Turn & approval** | agent loop đầy đủ, streaming Part, permission rules, **file hướng dẫn + system slot (AD-24)**, SSE replay, interrupt/steer, persist turn trước khi dispatch tool (AD-17), retention event log, TLS + `/api/pair`, TUI TypeScript (OpenTUI + `@ananke/sdk`), `/api/tui/*` control channel | `AGENTS.md` ở root được nạp đúng một lần, sửa file thì turn sau thấy bản mới, vượt ngân sách có `instructions.truncated`; một `AGENTS.md` đòi bỏ approval không làm đổi permission rules; TUI hoàn thành một task sửa file có approval; kill TUI rồi mở lại vẫn thấy đúng lịch sử; script gọi `/api/tui/append-prompt` chèn được text vào TUI đang mở; RSS service idle + 2 session < 80 MB trên máy 1 GB; `kill -9` giữa turn rồi restart vẫn đúng lịch sử, turn `awaiting_tool` tự hoàn tất |
-| **M2 — Đa client & plugin** | service discovery, desktop app, **app điện thoại + pairing QR**, SSE resync, SDK publish + versioning, web UI, **plugin host + `ananke-plugin-lua` + `/api/plugin` (AD-20, AD-21)** | TUI + desktop mở cùng session, thao tác trên một bên hiện tức thì bên kia; ghép điện thoại qua QR rồi hoàn tất một turn có approval khi máy không cài TUI; reload web không mất turn; cài một plugin Lua đăng ký 1 tool bằng `ananke plugin install`, tool đó chạy có approval như built-in; `kill -9` runner giữa hook không làm hỏng turn |
+| **M2 — Đa client & plugin** | service discovery, desktop app, **app điện thoại + pairing QR**, SSE resync, SDK publish + versioning, web UI, **plugin host + `ananke-plugin-lua` + `/api/plugin` (AD-20, AD-21)**, **skill `SKILL.md` + tool `skill` (AD-27)** | TUI + desktop mở cùng session, thao tác trên một bên hiện tức thì bên kia; ghép điện thoại qua QR rồi hoàn tất một turn có approval khi máy không cài TUI; reload web không mất turn; cài một plugin Lua đăng ký 1 tool bằng `ananke plugin install`, tool đó chạy có approval như built-in; thêm một skill project thì chỉ mục xuất hiện trong system, `skill` trả body, và một skill đòi bỏ approval không đổi permission rules; `kill -9` runner giữa hook không làm hỏng turn |
 | **M3 — Mở rộng** | ACP/IDE, Python/Go SDK, `@ananke/plugin-sdk`, hook `transform`/`guard` có budget (AD-23), embedded mode, sandbox hardening, **MCP client `stdio` + `http`, 3 tầng `mcp_search`/`mcp_call`/`task` (AD-25)**, **sub-agent tuần tự theo AD-16 + AD-26** | Tool list của agent chính không chứa `mcp__*`; `mcp_search` trả đúng tool cho 3 câu hỏi mẫu; khai báo 2 MCP server, chỉ server được gọi mới spawn; `constrained` giữ tối đa 1 process sống và chỉ bật tầng 0+1; `kill -9` server giữa call trả `mcp_unavailable` mà turn vẫn xong; SDK Python chạy được một task headless trong CI; plugin viết bằng TS/Python chạy cùng protocol với plugin Lua; test boundary pass; registry của con ⊆ registry cha ∩ `allow` và không chứa `task` khi `depth = 1`; trên profile `constrained`, cha spawn được 1 sub-agent `depth = 1`, vượt cap thì có `subagent.queued` thay vì OOM |
 | **M4 — Nâng cao** | subagent nền song song, worktree song song, Code Mode-style tool composition | Hai subagent chạy nền trên hai worktree, tổng hợp về session cha |
 
@@ -1051,6 +1088,8 @@ Một PR được coi là đúng kiến trúc khi:
 - [ ] Registry của sub-agent là giao của registry cha với `allow`, không chứa `task` khi `depth = 1`; test một lệnh bị `deny` ở cha vẫn bị chặn khi con thử chạy (AD-26).
 - [ ] Approval phát sinh trong session con đi qua đúng kênh của cha; `approval_policy = deny` cho summary `status: "blocked"` chứ không treo turn (AD-26).
 - [ ] Spawn vượt `max_subagents`/ngân sách context trả `resource.throttled`, không spawn rồi để tiến trình bị giết (AD-26).
+- [ ] Chỉ mục skill nằm trong ngân sách byte riêng; không thân `SKILL.md` nào có trong request gửi provider cho tới khi `skill` được gọi; `constrained` không vượt trần 6 KB (AD-27).
+- [ ] Một `SKILL.md` yêu cầu bỏ approval hoặc khai `allowed-tools` không làm đổi permission rules hay tool set; front matter lạ sinh `skill.warning` chứ không sinh quyền (AD-27).
 
 ---
 
@@ -1068,6 +1107,8 @@ Một PR được coi là đúng kiến trúc khi:
 | Subagent MCP (tầng 2) là context thứ hai trong cùng process | Trên 1 GB, hai context cùng sống dễ vượt trần và bị LMK giết | Tầng 2 tắt trên `constrained`; chỉ bật khi context cha > 70% trần; context con drop sau khi trả kết quả (AD-25) |
 | `task` bị dùng để vòng approval của cha | Leo thang quyền ngay trong một turn | Registry con = cha ∩ `allow`, không permission rules riêng, approval của con đi qua kênh của cha (AD-26) |
 | Sub-agent chạy song song trên cùng workspace | Xung đột ghi file, summary mô tả trạng thái không có thật | M3 tuần tự một con; worktree riêng để M4 (AD-26) |
+| Skill phình to (20 skill × 12 KB) nếu nạp sẵn | Context chết trước turn đầu trên máy 1 GB | Chỉ mục trong system, thân nạp theo yêu cầu, trần 12 KB/lần, chỉ mục 4 KB (AD-27) |
+| `SKILL.md` độc hại bơm chỉ thị như `AGENTS.md` | Model làm theo lệnh trong skill thay vì của người dùng | Skill là dữ liệu không tin cậy, không cấp quyền; approval vẫn chặn; front matter lạ bị bỏ qua + `skill.warning` (AD-27) |
 | `AGENTS.md` trong repo độc hại bơm chỉ thị ("bỏ approval", "gửi ~/.ssh") | Model làm theo lệnh của repo thay vì của người dùng | Instructions là dữ liệu không tin cậy, không cấp quyền; approval vẫn chặn; ngân sách byte chặn nhồi text (AD-24) |
 | Protocol công khai bị phụ thuộc | Khó breaking change | Chỉ thêm; deprecate có lịch; major version có tài liệu migration |
 | TUI/desktop/web dùng chung `@ananke/sdk` → một bug lan ra cả ba surface | Hỏng đồng loạt | SDK generated + wrapper mỏng có test riêng; conformance test chạy cùng bộ case qua HTTP |
@@ -1097,6 +1138,7 @@ Một PR được coi là đúng kiến trúc khi:
 - Các method `sampling`/`roots`/`elicitation` — không hỗ trợ ở bất kỳ giai đoạn nào (AD-25).
 - Sub-agent chạy song song, hoặc trên worktree riêng — thuộc M4 (AD-26).
 - Route/API riêng để spawn sub-agent — chỉ có tool `task` (AD-26).
+- Skill chạy code, hoặc `allowed-tools` có hiệu lực; skill tải từ URL/registry (AD-27).
 - Cơ chế "trust" cho file hướng dẫn — mọi `AGENTS.md` đều là dữ liệu không tin cậy (AD-24).
 
 ---
@@ -1118,6 +1160,8 @@ Một PR được coi là đúng kiến trúc khi:
 13. `mcp_search` dùng BM25 thuần trên tên + mô tả, hay thêm embedding? Embedding tăng độ trúng nhưng mang thêm model/vector store — thứ đáng ngờ trên máy 1 GB.
 14. Model mặc định cho sub-agent: kế thừa cha, hay luôn rơi về model rẻ nhất trong catalog (và ai chịu trách nhiệm khi model rẻ làm sai)?
 15. `awaiting_subagent` có nên là trạng thái turn công khai trong protocol, hay chỉ là hệ quả của việc cha đang chờ một `tool_result`?
+16. Chỉ mục skill: gửi cả 40 dòng trong system, hay lọc theo `description` khớp prompt người dùng (rẻ hơn nhưng thêm một heuristic ẩn)?
+17. Skill có nên khai `model`/`maxTurns` riêng như `task` (AD-26), hay giữ skill thuần là văn bản?
 
 ---
 
@@ -1152,6 +1196,7 @@ Plugin **không** thay được agent loop. Đây là khác biệt có chủ ý 
 - Thay agent loop, cách nén context, thứ tự turn → **fork**, không phải plugin.
 - Đã có MCP server → dùng **MCP** (AD-25); MCP chỉ có tool, không có hook, và tool của nó vẫn phải đi qua `mcp_search` → `mcp_call`/`task`, không vào tool list.
 - Cần chia một việc dài cho agent khác, cô lập context và quyền → tool `task` (AD-16, AD-26), không phải client, không phải plugin.
+- Thêm **kiến thức/quy trình** cho agent, viết bằng markdown, không cần runtime → **skill** (AD-27); cần chạy code hoặc đăng ký tool → plugin (AD-20).
 - Cần UI khác → **client** trên `/api`, không phải plugin.
 
 ### 15.4 Vì sao chưa WASM
