@@ -504,6 +504,76 @@ slice: nạp state → 1 model completion → persist part → dispatch tool →
 
 ---
 
+### AD-24 — File hướng dẫn dự án (`AGENTS.md`) là input một chiều, có ngân sách
+
+**Quyết định.** Engine ghép **một** message `system` ảo cho mỗi lượt gọi model, từ các nguồn theo thứ tự cố định:
+
+| Thứ tự | Nguồn | Bị ghi đè bởi |
+|---|---|---|
+| 1 | prompt nền của engine (hằng trong binary, có `BASE_PROMPT_VERSION`) | 2, 3, 4 |
+| 2 | `~/.config/ananke/AGENTS.md` (người dùng, không bắt buộc) | 3, 4 |
+| 3 | `AGENTS.md` ở workspace root | 4 |
+| 4 | `AGENTS.md` trong thư mục con của file mà tool vừa chạm | thắng |
+
+- Tương thích: chỉ đọc `CLAUDE.md` khi **không** có `AGENTS.md` trong cùng thư mục. Không đọc `.cursorrules`, không quét `*.md` ở root — đọc ngầm file lạ chính là cách một repo bơm chỉ thị vào model.
+- `system` **không** được append vào `Session::messages()`. Nó được dựng lại trong `Engine::model_step` mỗi lượt, vì transcript là thứ được persist, replay (`since`), và resume — nhét system vào đó thì mỗi lượt gửi lại thêm một bản nữa.
+- **Ngân sách:** `max_instructions_bytes` = 32_000 (`constrained`: 12_000), `max_instruction_files` = 8. Vượt → cắt từ ưu tiên **thấp nhất** trước (global trước, subdir cuối) và ghi `instructions.truncated: true` vào system để model biết mình đang thiếu, thay vì đoán.
+- **Nạp lại:** cache theo `(path, len, mtime)`; đổi file → nạp lại ở ranh giới turn, phát `instructions.loaded {files, bytes, truncated, changed}`. Trên `constrained` **không** watch file (AD-15 tắt watch) — chỉ so mtime khi turn bắt đầu.
+- **Hợp đồng một chiều:** file hướng dẫn là **dữ liệu không tin cậy**, ngang hàng mọi text khác trong workspace. Nó **không** cấp quyền, không tắt approval, không thêm tool. Chặn quyền là việc của permission rules (AD-07) và plugin `guard` (AD-23) — thứ người dùng cấu hình, không phải thứ repo tự khai.
+- Client vẫn thêm được instruction riêng qua `session.create.instructions` (mảng string, chung ngân sách byte) — đường này không qua file nên không bị cắt theo file.
+
+**Lý do.** Hiện `Engine::model_step` chỉ gửi `session.messages()` + `tools.schemas()` — **không có slot system**, nên quy ước `AGENTS.md` (Codex, OpenCode, Pi đều dùng) không có chỗ để sống. Đặt nó ở tầng request thay vì tầng session giữ nguyên AD-06/AD-08: system không phải Part, không có `seq`, không replay.
+
+**Hệ quả.** Repo tự mô tả quy tắc của nó (như chính file `AGENTS.md` của Ananke) mà client không phải gửi kèm; đổi file giữa phiên có hiệu lực từ turn sau, không cần session mới.
+
+**Đã loại.**
+- Nhét instructions vào Part/message của session: replay và resume nhân bản context, và `session.messages().len()` thành con số vô nghĩa.
+- Quét mọi markdown ở root để "không bỏ sót": biến mỗi repo thành bề mặt injection và ăn hết ngân sách token trên máy 1 GB.
+- Giữ instructions cố định suốt session: sửa `AGENTS.md` mà model vẫn theo bản cũ là lỗi khó hiểu khi debug.
+
+---
+
+### AD-25 — MCP client: server là process con dưới cùng chính sách như plugin
+
+**Quyết định.** Ananke là **MCP client**, không phải MCP server. Mỗi MCP server là process con nói JSON-RPC 2.0 qua stdio, NDJSON — **cùng codec với plugin host (AD-20)**, không thêm dependency. Khai báo trong `mcp.json` (project) và `~/.config/ananke/mcp.json` (user):
+
+```json
+{
+  "servers": {
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": { "NODE_OPTIONS": "--max-old-space-size=64" },
+      "sandbox": "inherited",
+      "mutating": true,
+      "longRunning": false,
+      "limits": { "startTimeoutMs": 10000, "toolTimeoutMs": 30000 }
+    }
+  }
+}
+```
+
+- **Tên tool:** `mcp__<server>__<tool>`, chuẩn hoá về `[a-z0-9_-]`, ≤ 64 ký tự (khớp `valid_name` của manifest plugin). Bắt buộc, vì `ToolRegistry::register` coi trùng tên là `RegistryError::Duplicate` và MCP không có namespace.
+- **`env` là whitelist**, không kế thừa môi trường của daemon. Kế thừa là cách rò `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` sang một package `npx` chưa ai kiểm chứng.
+- **`mutating` mặc định `true`** (fail-safe, cùng lý do với `ManifestTool`): tool MCP đi qua permission rules và approval như built-in; chỉ khi người dùng tự viết `"mutating": false` mới bỏ qua.
+- **Lazy spawn + schema cache:** daemon khởi động **không** spawn server nào. `tools/list` được cache trong SQLite (kèm `tool_list_hash`); process chỉ sống khi có `tools/call`. Đây là khác biệt giữa "dùng được 3 MCP server" và "daemon không start nổi trên 1 GB".
+- **RAM:** `max_mcp_servers` = 2 (`small`/`default`), **1** (`constrained`), `0` = tắt hẳn. Idle quá 60 s (`constrained`) / 5 phút → stop process, **giữ** cache schema. Một server Node là ~40–60 MB RSS, tức 4–6% RAM của máy 1 GB — nên cap là cứng, không phải "cho tiện".
+- **Handshake:** `initialize` → kiểm `protocolVersion`; không khớp thì server bị `disabled` + event, daemon vẫn sống (cùng mô hình `plugin.disabled`, AD-23).
+- **Không hỗ trợ giai đoạn 1:** `sampling`, `roots`, `elicitation` → trả `-32601`. Đó là các method biến server thành bên điều khiển model/người dùng; cấp chúng là mở đường leo thang quyền ngoài AD-22.
+- **Fail mode:** server chết giữa `tools/call` → `tool_result` lỗi mã `mcp_unavailable`, turn **tiếp tục** (tool MCP không nằm trên đường bắt buộc, khác `guard` fail-closed).
+- **Sandbox:** `inherited` chạy trong cùng cây sandbox như tool `bash` (AD-19); `external` phải khai báo tường minh và được nêu trong `/api/meta`. Trên Android (`sandbox = "none"`) cả hai chỉ còn permission rules.
+- **Event:** dùng lại `mcp.status_changed` (đã có trong protocol) cho lifecycle, thêm `mcp.tool_list_changed`. `notifications/message` **không** vào part — chỉ `mcp.log`, để event log không phình trên flash nhỏ (AD-19).
+- Transport HTTP (streamable HTTP/SSE) để sau M3, khi stdio đã ổn định.
+
+**Lý do.** MCP chỉ có tool, không có hook — nó là **tập con** của mô hình plugin, nên tái dùng manifest/limits/lifecycle thay vì dựng hệ thống thứ hai (§15.3). Đặt dưới cùng chính sách nghĩa là một MCP server không có quyền nhiều hơn một plugin Lua.
+
+**Đã loại.**
+- Nhúng MCP SDK và giữ connection thường trực cho mọi server đã khai báo: ~40–60 MB × N, chết trước khi turn đầu tiên chạy.
+- Cho tool MCP bỏ approval vì "server đã được người dùng cài": cài một server không phải là cấp quyền chạy lệnh trên mọi file.
+- Chạy MCP qua HTTP ngay giai đoạn 1: thêm TLS/token/timeout cho một bề mặt chưa có người dùng thật.
+
+---
+
 ## 4. Kiến trúc tổng thể
 
 ```
@@ -840,7 +910,7 @@ Không chọn: app điều khiển TUI qua `/api/tui/*` — biến điện tho�
 ananke/
   Cargo.toml                     # workspace
   crates/
-    ananke-core/                 # agent loop, context, compaction, resource limits / admission
+    ananke-core/                 # agent loop, context, instructions (AD-24), compaction, resource limits / admission
     ananke-provider/             # adapter: Responses API, Anthropic, OpenAI-compatible
     ananke-tools/                # bash, read, write, edit, grep, glob, task, skill
     ananke-sandbox/              # seatbelt / landlock / windows, phát hiện năng lực
@@ -850,6 +920,7 @@ ananke/
     ananke-service/              # daemon lifecycle, discovery, auth
     ananke-plugin-host/          # JSON-RPC host, manifest, lifecycle, hook budget (AD-20 … AD-23)
     ananke-plugin-lua/           # binary runner LuaJIT (mlua), stdlib bị cắt (AD-21)
+    ananke-mcp/                  # MCP client: stdio NDJSON, namespace tool, lazy spawn (AD-25)
     ananke-client/               # Rust client cho third-party (chỉ phụ thuộc protocol)
     ananke-embedded/             # in-process transport
     ananke-cli/                  # binary: run / serve / service / api / pair / tui / plugin / upgrade / mcp
@@ -876,9 +947,9 @@ ananke/
 | Mốc | Nội dung | Tiêu chí hoàn thành |
 |---|---|---|
 | **M0 — Skeleton** | workspace crates, protocol type, router `/api/meta`, session CRUD, một provider, tool `bash`/`read`, SQLite, profile thiết bị + `/api/limits`, phát hiện năng lực sandbox, build `aarch64-linux-android` | `curl` tạo session và chạy được 1 turn; `openapi.json` sinh ra và commit; `/api/meta` báo đúng `deviceProfile` và `sandbox` trên máy test |
-| **M1 — Turn & approval** | agent loop đầy đủ, streaming Part, permission rules, SSE replay, interrupt/steer, persist turn trước khi dispatch tool (AD-17), retention event log, TLS + `/api/pair`, TUI TypeScript (OpenTUI + `@ananke/sdk`), `/api/tui/*` control channel | TUI hoàn thành một task sửa file có approval; kill TUI rồi mở lại vẫn thấy đúng lịch sử; script gọi `/api/tui/append-prompt` chèn được text vào TUI đang mở; RSS service idle + 2 session < 80 MB trên máy 1 GB; `kill -9` giữa turn rồi restart vẫn đúng lịch sử, turn `awaiting_tool` tự hoàn tất |
+| **M1 — Turn & approval** | agent loop đầy đủ, streaming Part, permission rules, **file hướng dẫn + system slot (AD-24)**, SSE replay, interrupt/steer, persist turn trước khi dispatch tool (AD-17), retention event log, TLS + `/api/pair`, TUI TypeScript (OpenTUI + `@ananke/sdk`), `/api/tui/*` control channel | `AGENTS.md` ở root được nạp đúng một lần, sửa file thì turn sau thấy bản mới, vượt ngân sách có `instructions.truncated`; một `AGENTS.md` đòi bỏ approval không làm đổi permission rules; TUI hoàn thành một task sửa file có approval; kill TUI rồi mở lại vẫn thấy đúng lịch sử; script gọi `/api/tui/append-prompt` chèn được text vào TUI đang mở; RSS service idle + 2 session < 80 MB trên máy 1 GB; `kill -9` giữa turn rồi restart vẫn đúng lịch sử, turn `awaiting_tool` tự hoàn tất |
 | **M2 — Đa client & plugin** | service discovery, desktop app, **app điện thoại + pairing QR**, SSE resync, SDK publish + versioning, web UI, **plugin host + `ananke-plugin-lua` + `/api/plugin` (AD-20, AD-21)** | TUI + desktop mở cùng session, thao tác trên một bên hiện tức thì bên kia; ghép điện thoại qua QR rồi hoàn tất một turn có approval khi máy không cài TUI; reload web không mất turn; cài một plugin Lua đăng ký 1 tool bằng `ananke plugin install`, tool đó chạy có approval như built-in; `kill -9` runner giữa hook không làm hỏng turn |
-| **M3 — Mở rộng** | ACP/IDE, Python/Go SDK, `@ananke/plugin-sdk`, hook `transform`/`guard` có budget (AD-23), embedded mode, sandbox hardening, MCP trong sandbox, **sub-agent tuần tự theo AD-16** | SDK Python chạy được một task headless trong CI; plugin viết bằng TS/Python chạy cùng protocol với plugin Lua; test boundary pass; trên profile `constrained`, cha spawn được 1 sub-agent `depth = 1`, vượt cap thì có `subagent.queued` thay vì OOM |
+| **M3 — Mở rộng** | ACP/IDE, Python/Go SDK, `@ananke/plugin-sdk`, hook `transform`/`guard` có budget (AD-23), embedded mode, sandbox hardening, **MCP client stdio (AD-25)**, **sub-agent tuần tự theo AD-16** | Khai báo 2 MCP server, chỉ server được gọi mới spawn; `constrained` giữ tối đa 1 process sống; `kill -9` server giữa call trả `mcp_unavailable` mà turn vẫn xong; SDK Python chạy được một task headless trong CI; plugin viết bằng TS/Python chạy cùng protocol với plugin Lua; test boundary pass; trên profile `constrained`, cha spawn được 1 sub-agent `depth = 1`, vượt cap thì có `subagent.queued` thay vì OOM |
 | **M4 — Nâng cao** | subagent nền song song, worktree song song, Code Mode-style tool composition | Hai subagent chạy nền trên hai worktree, tổng hợp về session cha |
 
 ---
@@ -903,6 +974,10 @@ Một PR được coi là đúng kiến trúc khi:
 - [ ] Hook `transform`/`guard` có budget và test timeout: quá budget không treo turn, 3 lần liên tiếp thì `plugin.disabled` + event (AD-23).
 - [ ] Plugin không đọc/ghi file hay spawn process ngoài capability RPC; trên `sandbox = "none"` permission rules vẫn chặn (AD-22).
 - [ ] Tool do plugin đăng ký ghi đủ input/output vào event log và đi qua approval như built-in tool.
+- [ ] System message được dựng lại mỗi lượt từ nguồn ngoài session; `session.messages()` không chứa system; test khẳng định replay `since` không nhân bản instructions (AD-24).
+- [ ] File hướng dẫn không cấp quyền: test một `AGENTS.md` yêu cầu bỏ approval không thay đổi permission rules (AD-24).
+- [ ] MCP server chỉ spawn khi tool được gọi; `constrained` không vượt `max_mcp_servers` process; `kill -9` server giữa call chỉ trả `mcp_unavailable` (AD-25).
+- [ ] Tool MCP ghi vào event log với `serverID` + tên gốc, không chỉ tên đã namespace (AD-25).
 
 ---
 
@@ -914,7 +989,9 @@ Một PR được coi là đúng kiến trúc khi:
 | SSE qua proxy/load balancer bị buffer | Remote streaming trễ | Hướng dẫn tắt buffering; tài liệu hoá; cho phép WebSocket sau này |
 | Service version skew với client | Client gọi method không tồn tại | `protocolVersion` + `capabilities`; client degrade; major bump có migration |
 | Orphan/zombie daemon, tranh chấp lockfile | Hai engine cùng workspace | Singleton lock; `service status`; kiểm tra `pid` + start time; crash recovery |
-| MCP server ngoài sandbox | Thoát sandbox | Khai báo rõ; M3 chạy trong cùng sandbox tree |
+| MCP server ngoài sandbox | Thoát sandbox | `sandbox: inherited` là mặc định; `external` phải khai báo tường minh và hiện trong `/api/meta` (AD-25) |
+| Mỗi MCP server là process Node/Python ~40–60 MB | Vượt ngân sách 1 GB khi khai báo nhiều server | Lazy spawn, idle stop 60 s, `max_mcp_servers = 1` trên `constrained`, schema cache trong SQLite (AD-25) |
+| `AGENTS.md` trong repo độc hại bơm chỉ thị ("bỏ approval", "gửi ~/.ssh") | Model làm theo lệnh của repo thay vì của người dùng | Instructions là dữ liệu không tin cậy, không cấp quyền; approval vẫn chặn; ngân sách byte chặn nhồi text (AD-24) |
 | Protocol công khai bị phụ thuộc | Khó breaking change | Chỉ thêm; deprecate có lịch; major version có tài liệu migration |
 | TUI/desktop/web dùng chung `@ananke/sdk` → một bug lan ra cả ba surface | Hỏng đồng loạt | SDK generated + wrapper mỏng có test riêng; conformance test chạy cùng bộ case qua HTTP |
 | TUI là client TS, engine là Rust → lệch cách hiểu protocol | Bug chỉ hiện ở một phía | `openapi.json` là hợp đồng duy nhất; test mức HTTP chạy từ cả Rust client và TS SDK |
@@ -939,6 +1016,8 @@ Một PR được coi là đúng kiến trúc khi:
 - Relay/tunnel do Ananke cung cấp cho client ngoài LAN (người dùng tự dựng VPN/tunnel).
 - Hỗ trợ Windows sandbox đầy đủ ngang macOS/Linux (M3).
 - WebSocket transport (chỉ thêm nếu SSE không đủ).
+- MCP qua HTTP/streamable và các method `sampling`/`roots`/`elicitation` (AD-25).
+- Cơ chế "trust" cho file hướng dẫn — mọi `AGENTS.md` đều là dữ liệu không tin cậy (AD-24).
 
 ---
 
@@ -953,6 +1032,8 @@ Một PR được coi là đúng kiến trúc khi:
 7. Hook budget 100 ms có nên tách làm hai ngưỡng — 100 ms cho hook thuần tính toán, dài hơn cho hook được phép gọi `http`/`exec` (vì chúng không nên nằm trên đường đồng bộ)?
 8. Giai đoạn 1 có cho plugin khai báo `runtime: "binary"`, hay chỉ chấp nhận các runner do Ananke phát hành (Lua, Node, Python)?
 9. Plugin có được đăng ký **slash command** và **message renderer** như Pi, hay chỉ tool + hook?
+10. `AGENTS.md` có nên hỗ trợ `@import` trỏ tới file khác, hay giữ phẳng để ngân sách byte là tuyệt đối?
+11. `AGENTS.md` ở thư mục con: nạp theo file mà tool vừa chạm (động, đúng ngữ cảnh) hay theo toàn bộ cây workspace (tĩnh, dễ đoán hơn nhưng tốn ngân sách)?
 
 ---
 
@@ -985,7 +1066,7 @@ Plugin **không** thay được agent loop. Đây là khác biệt có chủ ý 
 - Thêm một tool, hoặc một kiểm tra trước khi chạy tool → **plugin**.
 - Đổi cách gọi model, thêm provider → **plugin** nếu chỉ cần `http` + định dạng request; **seam** nếu cần streaming/usage riêng.
 - Thay agent loop, cách nén context, thứ tự turn → **fork**, không phải plugin.
-- Đã có MCP server → dùng **MCP** (AD-11); MCP chỉ có tool, không có hook.
+- Đã có MCP server → dùng **MCP** (AD-25); MCP chỉ có tool, không có hook.
 - Cần UI khác → **client** trên `/api`, không phải plugin.
 
 ### 15.4 Vì sao chưa WASM
