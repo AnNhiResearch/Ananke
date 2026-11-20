@@ -79,6 +79,23 @@ pub async fn create_turn(
             return Err(ApiError::TooManyRequests(problem));
         }
 
+        // Validate max_subagents (AD-15)
+        let active_subagents = state.sessions.global_active_subagent_count();
+        if active_subagents >= limits.max_subagents as usize {
+            state.hub.emit_resource_throttled("max_subagents".to_owned(), active_subagents as u32, "rejected".to_owned());
+            let detail = format!(
+                "max subagents exceeded: {}/{} (limit: max_subagents, current: {}, action: rejected)",
+                active_subagents, limits.max_subagents, active_subagents
+            );
+            let problem = ananke_protocol::ProblemDetails::new(
+                StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                "Too Many Requests",
+            )
+            .with_detail(detail)
+            .with_code("resource_throttled");
+            return Err(ApiError::TooManyRequests(problem));
+        }
+
         // Validate max_part_bytes cho từng input part
         for part in &body.input {
             let part_len = match part {

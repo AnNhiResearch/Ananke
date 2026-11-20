@@ -1842,3 +1842,64 @@ async fn limit_exceeded_max_part_bytes_and_max_context_tokens() {
         "Context tokens vượt max_context_tokens phải trả 429"
     );
 }
+
+#[tokio::test]
+async fn limit_exceeded_max_subagents() {
+    let state = make_test_state().await;
+    let app = build(state.clone()).layer(from_fn(protocol_guard));
+
+    let session_id = create_session_helper(&app).await;
+
+    // Patch max_subagents = 1
+    let patch_body = serde_json::to_string(&ananke_protocol::PatchLimitsRequest {
+        max_part_bytes: None,
+        max_context_tokens: None,
+        max_resident_sessions: None,
+        max_parallel_turns: None,
+        max_subagents: Some(1),
+        max_event_bytes: None,
+    })
+    .unwrap();
+
+    let resp_patch = request(
+        &app,
+        Method::PATCH,
+        "/api/limits",
+        Some(patch_body),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp_patch.status(), StatusCode::OK);
+
+    // Giả lập đã có 1 subagent đang active
+    state.sessions.increment_active_subagents();
+
+    // Tạo turn mới -> chạm trần max_subagents (1 >= 1) -> trả về 429 resource_throttled
+    let turn_body = serde_json::to_string(&ananke_protocol::CreateTurnRequest {
+        input: vec![ananke_protocol::InputPartDto::Text { text: "call subagent".into() }],
+    })
+    .unwrap();
+
+    let resp = request(
+        &app,
+        Method::POST,
+        &format!("/api/session/{session_id}/turn"),
+        Some(turn_body),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "Should return 429 for exceeded max_subagents");
+    let problem: ananke_protocol::ProblemDetails = json_body(resp).await;
+    assert_eq!(problem.code, Some("resource_throttled".to_owned()));
+    assert!(problem.detail.as_ref().unwrap().contains("max subagents exceeded"));
+
+    // Cleanup counter
+    state.sessions.decrement_active_subagents();
+}

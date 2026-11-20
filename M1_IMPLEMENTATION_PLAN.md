@@ -266,7 +266,7 @@ cargo run -p ananke-protocol -- gen openapi
 - [x] Test `resume_turn` via HTTP (verified in `persist_turn_truoc_dispatch_tool_ad_17` via `POST /api/session/{id}/turn/{turn_id}/resume`)
 - [x] Test checkpoint/prune background task (verified in `checkpoint_va_background_prune_hoat_dong`)
 - [x] Test `max_context_tokens` / `max_part_bytes` limits (verified in `limit_exceeded_max_part_bytes_and_max_context_tokens`)
-- [ ] Test `max_subagents` limit
+- [x] Test `max_subagents` limit (verified in `limit_exceeded_max_subagents`)
 
 ### Run Tests
 ```bash

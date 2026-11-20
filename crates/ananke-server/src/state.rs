@@ -42,11 +42,25 @@ pub struct SessionRegistry {
     /// Global counter of active turns (Running or AwaitingTool) across all sessions.
     /// Incremented when a turn starts, decremented when it ends. Used for admission control AD-15.
     active_turns: AtomicUsize,
+    /// Global counter of active subagents (spawned by tools/delegates) across all sessions.
+    active_subagents: AtomicUsize,
 }
 
 impl SessionRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn global_active_subagent_count(&self) -> usize {
+        self.active_subagents.load(Ordering::Acquire)
+    }
+
+    pub fn increment_active_subagents(&self) {
+        self.active_subagents.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn decrement_active_subagents(&self) {
+        self.active_subagents.fetch_sub(1, Ordering::AcqRel);
     }
 
     async fn lock(&self) -> tokio::sync::MutexGuard<'_, HashMap<SessionId, SessionHandle>> {
