@@ -363,6 +363,7 @@ max_event_bytes       = 64_000
 - **Song song có cap:** vượt `max_subagents` thì xếp hàng, event `subagent.queued`.
 - **Unload ngay khi xong:** transcript ở lại SQLite để audit, không giữ trong RAM.
 - `constrained`: `depth = 1` (con không spawn con), `max_subagents = 1`.
+- Hợp đồng quyền, allowlist, approval và ngân sách của `task`: **AD-26**.
 
 **Lý do.** Mô hình "copy cả history cho con" khiến RAM tỉ lệ với *số con × kích thước context cha* — chết trên thiết bị nhỏ. Brief/summary khiến RAM tỉ lệ với *kích thước brief + summary*, gần như hằng số.
 
@@ -543,7 +544,7 @@ slice: nạp state → 1 model completion → persist part → dispatch tool →
 |---|---|---|---|
 | 0 | `mcp_search` | Truy vấn **index** SQLite FTS trên `server/tool/description`; trả ≤ 8 tên + mô tả một dòng. Không spawn, không network | Mỗi khi agent cần biết có capability phù hợp |
 | 1 | `mcp_call` | Một lần gọi duy nhất. Schema chỉ dùng để **validate tham số phía server**, không vào prompt; kết quả cắt theo byte budget rồi mới vào history | Việc một phát là xong, output nhỏ |
-| 2 | `task` (subagent, AD-16) | Spawn subagent với allowlist `mcp__<server>__<tool>`; context riêng, trả báo cáo cuối, **context con bị drop** | Nhiều bước, output lớn/bẩn, tool `mutating` cần thử-sai |
+| 2 | `task` (subagent, AD-16 + AD-26) | Spawn subagent với allowlist `mcp__<server>__<tool>`; context riêng, trả báo cáo cuối, **con unload khỏi RAM ngay khi xong** (transcript giữ trong SQLite) | Nhiều bước, output lớn/bẩn, tool `mutating` cần thử-sai |
 
 - **Vì sao ba tầng, không phải "mọi thứ qua subagent".** Nạp thẳng tool MCP vào prompt (mô hình Cline/Roo) cháy context. Nhưng bắt mọi lần gọi đi qua subagent thì trả thêm một lượt model + một system message cho ca rẻ nhất — "đọc một file qua server filesystem". Tầng 2 dùng để **cách ly bẩn và cách ly quyền**, không phải để cách ly mọi lần gọi.
 - Khai báo trong `mcp.json` (project) và `~/.config/ananke/mcp.json` (user), cả hai transport trong cùng một file:
@@ -597,6 +598,46 @@ slice: nạp state → 1 model completion → persist part → dispatch tool →
 - Nhúng MCP SDK và giữ connection thường trực cho mọi server đã khai báo: ~40–60 MB × N, chết trước khi turn đầu tiên chạy.
 - Cho tool MCP bỏ approval vì "server đã được người dùng cài": cài một server không phải là cấp quyền chạy lệnh trên mọi file.
 - Tự cài hoặc tự tải MCP server hộ người dùng (`npx -y`, `pip install`, tải binary): biến Ananke thành bên phân phối code chưa ai kiểm chứng, và biến lỗi mạng thành lỗi của Ananke.
+
+---
+
+### AD-26 — `task`: hợp đồng quyền và ngân sách của sub-agent
+
+**Vấn đề AD-16 để mở.** AD-16 chốt *hình dạng* (session con, brief-in/summary-out, unload khi xong) nhưng không nói **ai cấp quyền cho con**. Đó không phải chỗ trống hình thức: nếu con thừa hưởng registry đầy đủ và permission rules của cha, thì `task` thành đường vòng approval — cha bị `deny` một lệnh, cha giao lại cho con, con chạy.
+
+**Quyết định.**
+
+- **Một cửa vào.** Chỉ tool `task` spawn sub-agent. Không route `/api/subagent` ở giai đoạn này; `POST /api/session` với `parentID` vẫn tạo được session con thủ công cho test, nhưng không phải đường của agent.
+- **Con không bao giờ có nhiều quyền hơn cha.** Registry của con = `ToolRegistry` của cha ∩ `allow` trong call, trừ `task` (khi `depth = 1` hoặc `max_subagents` đã chạm cap). `deny` loại trừ sau cùng. `allow` chứa tên không có trong registry cha → `task` fail `invalid_allowlist`, không âm thầm bỏ qua.
+- **Không có permission rules riêng cho con.** Con dùng **đúng** rules + approval policy của session cha. Không có "approval của sub-agent": yêu cầu approval phát trên `sessionID` của **con** nhưng đi qua cùng kênh `/api/event` + `POST /api/approval`; client thấy `parentID` và hiển thị đây là yêu cầu từ sub-agent. Cha ở trạng thái `awaiting_subagent` trong lúc đó.
+- **Chế độ không người** (`approval_policy = deny`, CI/headless): con chạy `DenyOnAsk` — tool cần approval bị từ chối ngay, con kết thúc với `status: "blocked"` kèm danh sách lệnh bị chặn. Không treo chờ người không tồn tại.
+- **Input của `task`** (schema cố định, không nhận field lạ):
+
+```json
+{
+  "prompt": "…",
+  "refs": ["crates/ananke-core/src/engine.rs:258"],
+  "allow": ["read", "grep", "mcp__fs__read_file"],
+  "model": "…",
+  "limits": { "maxTurns": 12, "maxWallTimeMs": 300000 }
+}
+```
+
+- **Output:** đúng một `tool_result` chứa summary có cấu trúc của AD-16 (`files_changed`, `findings`, `next_steps`, `status`) + `sessionID` của con để người dùng mở lại transcript. Không gì khác đi vào history của cha.
+- **Ngân sách, kiểm trước khi spawn:** `max_subagents` và `max_parallel_turns` (AD-15) là cứng; `max_subagents × max_context_tokens(con)` phải nằm trong phần RAM còn lại, không thì `resource.throttled` với `action: "rejected"` — **không** spawn rồi để OOM. Trần mặc định: brief 4 KB (`constrained` 2 KB), summary 4 KB, `maxTurns` 12 (`constrained` 6), `maxWallTime` 5 phút (`constrained` 2 phút).
+- **Khi nào được spawn:** chỉ khi việc cần ≥ 2 vòng tool, hoặc output dự kiến vượt ~8 KB, hoặc cần cô lập quyền (tool `mutating` của MCP, AD-25 tầng 2). Một tool call là xong thì gọi thẳng: mỗi lần spawn là một lượt model cộng một summary ngược.
+- **Huỷ:** interrupt turn cha → huỷ turn con (`turn.interrupted` trên session con), summary `status: "partial"`. Con không sống lâu hơn cha; `max_wall_time` cũng chặn.
+- **Cô lập ở M3:** con chạy **tuần tự**, một con tại một thời điểm trên `constrained`; cùng workspace với cha (worktree riêng là M4); không đăng ký tool mới, không nạp plugin, không mở cổng HTTP riêng, không giữ connection MCP lâu hơn call của nó.
+- **`model` override** là field duy nhất cho phép con dùng model khác cha — để giao việc rẻ cho model rẻ. Không có system prompt riêng: con nhận instructions theo AD-24 như mọi session, cùng ngân sách byte.
+- **Event:** `subagent.queued`, `subagent.started`, `subagent.completed`, thêm `subagent.failed`, `subagent.cancelled`, `subagent.budget_exceeded` (mang `{limit, current}`). Tất cả phát trên `sessionID` của con, kèm `parentID`.
+
+**Lý do.** Một sub-agent là **cùng một engine, khác session** — không phải process mới, không phải runtime mới. Vì vậy mọi thứ nó làm phải quy về đúng permission rules của cha; nếu không, `task` là lỗ hổng leo thang quyền đội lốt "chia việc". Ngân sách phải kiểm **trước** khi spawn vì trên máy 1 GB, phát hiện thiếu RAM sau khi spawn nghĩa là đã bị LMK giết.
+
+**Đã loại.**
+- Con có registry đầy đủ "cho tiện": biến `task` thành đường vòng approval và làm `deny` của cha thành vô nghĩa.
+- Kênh approval riêng cho sub-agent: hai đường approval là hai chỗ để quên kiểm tra scope.
+- Con chạy như process riêng: ~30–40 MB mỗi con, không đổi lấy gì ở M3 — cô lập quyền đã đạt bằng registry ∩ allowlist.
+- Chờ người approve trong CI: turn treo vô hạn trong pipeline, tệ hơn một summary `blocked`.
 
 ---
 
@@ -782,6 +823,7 @@ todo.updated             plan.updated
 file.changed             lsp.diagnostic
 mcp.status_changed       model.catalog_updated
 subagent.queued          subagent.started         subagent.completed
+subagent.failed          subagent.cancelled       subagent.budget_exceeded
 plugin.started           plugin.stopped           plugin.disabled
 plugin.error
 resource.throttled       event.resync_required
@@ -975,7 +1017,7 @@ ananke/
 | **M0 — Skeleton** | workspace crates, protocol type, router `/api/meta`, session CRUD, một provider, tool `bash`/`read`, SQLite, profile thiết bị + `/api/limits`, phát hiện năng lực sandbox, build `aarch64-linux-android` | `curl` tạo session và chạy được 1 turn; `openapi.json` sinh ra và commit; `/api/meta` báo đúng `deviceProfile` và `sandbox` trên máy test |
 | **M1 — Turn & approval** | agent loop đầy đủ, streaming Part, permission rules, **file hướng dẫn + system slot (AD-24)**, SSE replay, interrupt/steer, persist turn trước khi dispatch tool (AD-17), retention event log, TLS + `/api/pair`, TUI TypeScript (OpenTUI + `@ananke/sdk`), `/api/tui/*` control channel | `AGENTS.md` ở root được nạp đúng một lần, sửa file thì turn sau thấy bản mới, vượt ngân sách có `instructions.truncated`; một `AGENTS.md` đòi bỏ approval không làm đổi permission rules; TUI hoàn thành một task sửa file có approval; kill TUI rồi mở lại vẫn thấy đúng lịch sử; script gọi `/api/tui/append-prompt` chèn được text vào TUI đang mở; RSS service idle + 2 session < 80 MB trên máy 1 GB; `kill -9` giữa turn rồi restart vẫn đúng lịch sử, turn `awaiting_tool` tự hoàn tất |
 | **M2 — Đa client & plugin** | service discovery, desktop app, **app điện thoại + pairing QR**, SSE resync, SDK publish + versioning, web UI, **plugin host + `ananke-plugin-lua` + `/api/plugin` (AD-20, AD-21)** | TUI + desktop mở cùng session, thao tác trên một bên hiện tức thì bên kia; ghép điện thoại qua QR rồi hoàn tất một turn có approval khi máy không cài TUI; reload web không mất turn; cài một plugin Lua đăng ký 1 tool bằng `ananke plugin install`, tool đó chạy có approval như built-in; `kill -9` runner giữa hook không làm hỏng turn |
-| **M3 — Mở rộng** | ACP/IDE, Python/Go SDK, `@ananke/plugin-sdk`, hook `transform`/`guard` có budget (AD-23), embedded mode, sandbox hardening, **MCP client `stdio` + `http`, 3 tầng `mcp_search`/`mcp_call`/`task` (AD-25)**, **sub-agent tuần tự theo AD-16** | Tool list của agent chính không chứa `mcp__*`; `mcp_search` trả đúng tool cho 3 câu hỏi mẫu; khai báo 2 MCP server, chỉ server được gọi mới spawn; `constrained` giữ tối đa 1 process sống và chỉ bật tầng 0+1; `kill -9` server giữa call trả `mcp_unavailable` mà turn vẫn xong; SDK Python chạy được một task headless trong CI; plugin viết bằng TS/Python chạy cùng protocol với plugin Lua; test boundary pass; trên profile `constrained`, cha spawn được 1 sub-agent `depth = 1`, vượt cap thì có `subagent.queued` thay vì OOM |
+| **M3 — Mở rộng** | ACP/IDE, Python/Go SDK, `@ananke/plugin-sdk`, hook `transform`/`guard` có budget (AD-23), embedded mode, sandbox hardening, **MCP client `stdio` + `http`, 3 tầng `mcp_search`/`mcp_call`/`task` (AD-25)**, **sub-agent tuần tự theo AD-16 + AD-26** | Tool list của agent chính không chứa `mcp__*`; `mcp_search` trả đúng tool cho 3 câu hỏi mẫu; khai báo 2 MCP server, chỉ server được gọi mới spawn; `constrained` giữ tối đa 1 process sống và chỉ bật tầng 0+1; `kill -9` server giữa call trả `mcp_unavailable` mà turn vẫn xong; SDK Python chạy được một task headless trong CI; plugin viết bằng TS/Python chạy cùng protocol với plugin Lua; test boundary pass; registry của con ⊆ registry cha ∩ `allow` và không chứa `task` khi `depth = 1`; trên profile `constrained`, cha spawn được 1 sub-agent `depth = 1`, vượt cap thì có `subagent.queued` thay vì OOM |
 | **M4 — Nâng cao** | subagent nền song song, worktree song song, Code Mode-style tool composition | Hai subagent chạy nền trên hai worktree, tổng hợp về session cha |
 
 ---
@@ -1006,6 +1048,9 @@ Một PR được coi là đúng kiến trúc khi:
 - [ ] MCP server chỉ spawn khi tool được gọi; `constrained` không vượt `max_mcp_servers` process và không bật tầng 2; `kill -9` server giữa call chỉ trả `mcp_unavailable` (AD-25).
 - [ ] Tool MCP ghi vào event log với `serverID` + tên gốc, không chỉ tên đã namespace (AD-25).
 - [ ] `mcp_call` chỉ nhận tool đã có trong index của server đã khai báo; kết quả vượt budget bị cắt và có cờ `truncated`, không đẩy nguyên văn vào history (AD-25).
+- [ ] Registry của sub-agent là giao của registry cha với `allow`, không chứa `task` khi `depth = 1`; test một lệnh bị `deny` ở cha vẫn bị chặn khi con thử chạy (AD-26).
+- [ ] Approval phát sinh trong session con đi qua đúng kênh của cha; `approval_policy = deny` cho summary `status: "blocked"` chứ không treo turn (AD-26).
+- [ ] Spawn vượt `max_subagents`/ngân sách context trả `resource.throttled`, không spawn rồi để tiến trình bị giết (AD-26).
 
 ---
 
@@ -1021,6 +1066,8 @@ Một PR được coi là đúng kiến trúc khi:
 | Mỗi MCP server là process Node/Python ~40–60 MB | Vượt ngân sách 1 GB khi khai báo nhiều server | Lazy spawn, idle stop 60 s, `max_mcp_servers = 1` trên `constrained`, index trong SQLite thay vì schema trong RAM (AD-25) |
 | Search-first thêm một lượt model cho lần dùng đầu của mỗi capability | Chậm hơn tool built-in ở ca một-phát, nhất là trên máy yếu | Index BM25 trên tên + mô tả + alias trong `mcp.json`; sticky pin ≤ 3 tool cho N lượt; đo số lượt trung bình trước khi tối ưu thêm (AD-25) |
 | Subagent MCP (tầng 2) là context thứ hai trong cùng process | Trên 1 GB, hai context cùng sống dễ vượt trần và bị LMK giết | Tầng 2 tắt trên `constrained`; chỉ bật khi context cha > 70% trần; context con drop sau khi trả kết quả (AD-25) |
+| `task` bị dùng để vòng approval của cha | Leo thang quyền ngay trong một turn | Registry con = cha ∩ `allow`, không permission rules riêng, approval của con đi qua kênh của cha (AD-26) |
+| Sub-agent chạy song song trên cùng workspace | Xung đột ghi file, summary mô tả trạng thái không có thật | M3 tuần tự một con; worktree riêng để M4 (AD-26) |
 | `AGENTS.md` trong repo độc hại bơm chỉ thị ("bỏ approval", "gửi ~/.ssh") | Model làm theo lệnh của repo thay vì của người dùng | Instructions là dữ liệu không tin cậy, không cấp quyền; approval vẫn chặn; ngân sách byte chặn nhồi text (AD-24) |
 | Protocol công khai bị phụ thuộc | Khó breaking change | Chỉ thêm; deprecate có lịch; major version có tài liệu migration |
 | TUI/desktop/web dùng chung `@ananke/sdk` → một bug lan ra cả ba surface | Hỏng đồng loạt | SDK generated + wrapper mỏng có test riêng; conformance test chạy cùng bộ case qua HTTP |
@@ -1048,6 +1095,8 @@ Một PR được coi là đúng kiến trúc khi:
 - WebSocket transport (chỉ thêm nếu SSE không đủ).
 - MCP client, cả `stdio` và HTTP/streamable — thuộc M3 (AD-25).
 - Các method `sampling`/`roots`/`elicitation` — không hỗ trợ ở bất kỳ giai đoạn nào (AD-25).
+- Sub-agent chạy song song, hoặc trên worktree riêng — thuộc M4 (AD-26).
+- Route/API riêng để spawn sub-agent — chỉ có tool `task` (AD-26).
 - Cơ chế "trust" cho file hướng dẫn — mọi `AGENTS.md` đều là dữ liệu không tin cậy (AD-24).
 
 ---
@@ -1067,6 +1116,8 @@ Một PR được coi là đúng kiến trúc khi:
 11. `AGENTS.md` ở thư mục con: nạp theo file mà tool vừa chạm (động, đúng ngữ cảnh) hay theo toàn bộ cây workspace (tĩnh, dễ đoán hơn nhưng tốn ngân sách)?
 12. Sticky pin của `mcp_search` nên tính theo **số lượt** hay theo **turn**? Theo lượt thì nhả sớm khi turn dài, theo turn thì giữ lâu hơn nhưng dễ tích lại thành tool list thu nhỏ.
 13. `mcp_search` dùng BM25 thuần trên tên + mô tả, hay thêm embedding? Embedding tăng độ trúng nhưng mang thêm model/vector store — thứ đáng ngờ trên máy 1 GB.
+14. Model mặc định cho sub-agent: kế thừa cha, hay luôn rơi về model rẻ nhất trong catalog (và ai chịu trách nhiệm khi model rẻ làm sai)?
+15. `awaiting_subagent` có nên là trạng thái turn công khai trong protocol, hay chỉ là hệ quả của việc cha đang chờ một `tool_result`?
 
 ---
 
@@ -1100,6 +1151,7 @@ Plugin **không** thay được agent loop. Đây là khác biệt có chủ ý 
 - Đổi cách gọi model, thêm provider → **plugin** nếu chỉ cần `http` + định dạng request; **seam** nếu cần streaming/usage riêng.
 - Thay agent loop, cách nén context, thứ tự turn → **fork**, không phải plugin.
 - Đã có MCP server → dùng **MCP** (AD-25); MCP chỉ có tool, không có hook, và tool của nó vẫn phải đi qua `mcp_search` → `mcp_call`/`task`, không vào tool list.
+- Cần chia một việc dài cho agent khác, cô lập context và quyền → tool `task` (AD-16, AD-26), không phải client, không phải plugin.
 - Cần UI khác → **client** trên `/api`, không phải plugin.
 
 ### 15.4 Vì sao chưa WASM
