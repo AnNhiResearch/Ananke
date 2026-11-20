@@ -533,9 +533,20 @@ slice: nạp state → 1 model completion → persist part → dispatch tool →
 
 ---
 
-### AD-25 — MCP client: server là process con dưới cùng chính sách như plugin
+### AD-25 — MCP client: tool MCP không vào tool list, chỉ đi qua 3 tầng
 
-**Quyết định.** Ananke là **MCP client**, không phải MCP server. Mỗi MCP server là process con nói JSON-RPC 2.0 qua stdio, NDJSON — **cùng codec với plugin host (AD-20)**, không thêm dependency. Khai báo trong `mcp.json` (project) và `~/.config/ananke/mcp.json` (user):
+**Quyết định.** Ananke là **MCP client**, không phải MCP server, và **không tích hợp sẵn server nào**: người dùng tự cài server (hoặc trỏ tới một URL có sẵn), `mcp.json` chỉ là nơi khai báo. MCP vì thế chỉ là **một API ngoài** — Ananke hỗ trợ điều phối, không phân phối. Mỗi server chịu cùng chính sách như plugin (AD-20 … AD-22): không có quyền gì hơn một plugin Lua.
+
+**Tool MCP không bao giờ được nạp vào `ToolRegistry` của session chính.** Không `tools/list` nào đổ thẳng vào prompt, không `inputSchema` nào nằm trong tool list của agent chính. Agent chính thấy đúng ba tool, và mọi capability MCP đi qua ba tầng theo bậc chi phí:
+
+| Tầng | Tool lộ ra agent chính | Làm gì | Khi nào dùng |
+|---|---|---|---|
+| 0 | `mcp_search` | Truy vấn **index** SQLite FTS trên `server/tool/description`; trả ≤ 8 tên + mô tả một dòng. Không spawn, không network | Mỗi khi agent cần biết có capability phù hợp |
+| 1 | `mcp_call` | Một lần gọi duy nhất. Schema chỉ dùng để **validate tham số phía server**, không vào prompt; kết quả cắt theo byte budget rồi mới vào history | Việc một phát là xong, output nhỏ |
+| 2 | `task` (subagent, AD-16) | Spawn subagent với allowlist `mcp__<server>__<tool>`; context riêng, trả báo cáo cuối, **context con bị drop** | Nhiều bước, output lớn/bẩn, tool `mutating` cần thử-sai |
+
+- **Vì sao ba tầng, không phải "mọi thứ qua subagent".** Nạp thẳng tool MCP vào prompt (mô hình Cline/Roo) cháy context. Nhưng bắt mọi lần gọi đi qua subagent thì trả thêm một lượt model + một system message cho ca rẻ nhất — "đọc một file qua server filesystem". Tầng 2 dùng để **cách ly bẩn và cách ly quyền**, không phải để cách ly mọi lần gọi.
+- Khai báo trong `mcp.json` (project) và `~/.config/ananke/mcp.json` (user), cả hai transport trong cùng một file:
 
 ```json
 {
@@ -553,24 +564,39 @@ slice: nạp state → 1 model completion → persist part → dispatch tool →
 }
 ```
 
-- **Tên tool:** `mcp__<server>__<tool>`, chuẩn hoá về `[a-z0-9_-]`, ≤ 64 ký tự (khớp `valid_name` của manifest plugin). Bắt buộc, vì `ToolRegistry::register` coi trùng tên là `RegistryError::Duplicate` và MCP không có namespace.
-- **`env` là whitelist**, không kế thừa môi trường của daemon. Kế thừa là cách rò `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` sang một package `npx` chưa ai kiểm chứng.
-- **`mutating` mặc định `true`** (fail-safe, cùng lý do với `ManifestTool`): tool MCP đi qua permission rules và approval như built-in; chỉ khi người dùng tự viết `"mutating": false` mới bỏ qua.
-- **Lazy spawn + schema cache:** daemon khởi động **không** spawn server nào. `tools/list` được cache trong SQLite (kèm `tool_list_hash`); process chỉ sống khi có `tools/call`. Đây là khác biệt giữa "dùng được 3 MCP server" và "daemon không start nổi trên 1 GB".
-- **RAM:** `max_mcp_servers` = 2 (`small`/`default`), **1** (`constrained`), `0` = tắt hẳn. Idle quá 60 s (`constrained`) / 5 phút → stop process, **giữ** cache schema. Một server Node là ~40–60 MB RSS, tức 4–6% RAM của máy 1 GB — nên cap là cứng, không phải "cho tiện".
-- **Handshake:** `initialize` → kiểm `protocolVersion`; không khớp thì server bị `disabled` + event, daemon vẫn sống (cùng mô hình `plugin.disabled`, AD-23).
-- **Không hỗ trợ giai đoạn 1:** `sampling`, `roots`, `elicitation` → trả `-32601`. Đó là các method biến server thành bên điều khiển model/người dùng; cấp chúng là mở đường leo thang quyền ngoài AD-22.
-- **Fail mode:** server chết giữa `tools/call` → `tool_result` lỗi mã `mcp_unavailable`, turn **tiếp tục** (tool MCP không nằm trên đường bắt buộc, khác `guard` fail-closed).
-- **Sandbox:** `inherited` chạy trong cùng cây sandbox như tool `bash` (AD-19); `external` phải khai báo tường minh và được nêu trong `/api/meta`. Trên Android (`sandbox = "none"`) cả hai chỉ còn permission rules.
-- **Event:** dùng lại `mcp.status_changed` (đã có trong protocol) cho lifecycle, thêm `mcp.tool_list_changed`. `notifications/message` **không** vào part — chỉ `mcp.log`, để event log không phình trên flash nhỏ (AD-19).
-- Transport HTTP (streamable HTTP/SSE) để sau M3, khi stdio đã ổn định.
+- **Tên tool:** `mcp__<server>__<tool>`, chuẩn hoá về `[a-z0-9_-]`, ≤ 64 ký tự (khớp `valid_name` của manifest plugin). Dùng ở cả ba tầng, vì `ToolRegistry::register` coi trùng tên là `RegistryError::Duplicate`, MCP không có namespace, và model không được nhầm tool MCP với built-in.
+- **Transport `command`:** process con nói JSON-RPC 2.0 qua stdio, NDJSON — **cùng codec với plugin host (AD-20)**, không thêm dependency.
+- **Transport `url`:** streamable HTTP, **không có process con** — rẻ nhất cho máy 1 GB: không reap zombie, không idle-stop, chỉ cần timeout và token. Server remote do người dùng tự dựng:
 
-**Lý do.** MCP chỉ có tool, không có hook — nó là **tập con** của mô hình plugin, nên tái dùng manifest/limits/lifecycle thay vì dựng hệ thống thứ hai (§15.3). Đặt dưới cùng chính sách nghĩa là một MCP server không có quyền nhiều hơn một plugin Lua.
+```json
+"sentry": {
+  "url": "https://mcp.example.com/mcp",
+  "headers": { "Authorization": "Bearer ${SENTRY_TOKEN}" },
+  "mutating": false
+}
+```
+
+- **`headers`/`env` chỉ nhận giá trị tường minh hoặc `${VAR}` đọc từ env của daemon**, không log giá trị. `env` của transport `command` là whitelist, không kế thừa môi trường daemon — kế thừa là cách rò `OPENAI_API_KEY` sang một package `npx` chưa ai kiểm chứng.
+- **`mutating` mặc định `true`** (fail-safe, cùng lý do với `ManifestTool`): tool MCP đi qua permission rules và approval như built-in; chỉ khi người dùng tự viết `"mutating": false` mới bỏ qua.
+- **Index, không phải schema cache nạp sẵn:** daemon khởi động **không** spawn server nào và **không** giữ `inputSchema` nào trong RAM. `tools/list` được lưu thành index tìm kiếm trong SQLite (`server`, `tool`, `description`, `schema_hash`, `tool_list_hash`); process chỉ sống khi có `tools/call`. Đây là khác biệt giữa "dùng được 3 MCP server" và "daemon không start nổi trên 1 GB".
+- **Sticky pin:** sau `mcp_search`, schema của ≤ 3 tool trúng được giữ cho N lượt kế tiếp rồi bỏ, để bước sau không phải search lại. Không pin thì mỗi bước là một vòng round-trip thừa; pin vô hạn thì quay lại đúng vấn đề của tool list.
+- **RAM:** `max_mcp_servers` = 2 (`small`/`default`), **1** (`constrained`), `0` = tắt hẳn. Idle quá 60 s (`constrained`) / 5 phút → stop process, **giữ** index. Một server Node là ~40–60 MB RSS, tức 4–6% RAM của máy 1 GB — nên cap là cứng, không phải "cho tiện".
+- **`constrained` chỉ bật tầng 0 + 1**, tắt tầng 2: subagent là context thứ hai cùng sống trong một process, đúng thứ không được phép trên máy 1 GB khi chưa cần. Tầng 2 chỉ bật khi context cha đã vượt ~70% trần.
+- **Handshake:** `initialize` → kiểm `protocolVersion`; không khớp thì server bị `disabled` + event, daemon vẫn sống (cùng mô hình `plugin.disabled`, AD-23).
+- **Không hỗ trợ ở bất kỳ giai đoạn nào:** `sampling`, `roots`, `elicitation` → trả `-32601`. Đó là các method biến server thành bên điều khiển model/người dùng; cấp chúng là mở đường leo thang quyền ngoài AD-22.
+- **Fail mode:** server chết giữa `tools/call` → `tool_result` lỗi mã `mcp_unavailable`, turn **tiếp tục** (tool MCP không nằm trên đường bắt buộc, khác `guard` fail-closed). Server chưa cài hoặc chưa chạy → `mcp_search` ghi rõ "server chưa khả dụng"; agent báo người dùng, **không** tự cài.
+- **Sandbox:** `inherited` chạy trong cùng cây sandbox như tool `bash` (AD-19); `external` phải khai báo tường minh và được nêu trong `/api/meta`. Trên Android (`sandbox = "none"`) cả hai chỉ còn permission rules.
+- **Event:** dùng lại `mcp.status_changed` (đã có trong protocol) cho lifecycle, thêm `mcp.tool_list_changed` và `mcp.tool_search` (query, số trúng, độ trễ index). `notifications/message` và `progress` **không** vào part — chỉ `mcp.log`: event log không phình trên flash nhỏ (AD-19), và tiến trình của server không chiếm context model.
+- **Dữ liệu MCP là dữ liệu không tin cậy:** kết quả tool MCP không cấp quyền, không đổi phạm vi crate, không được đọc như instruction (cùng nguyên tắc AD-24).
+
+**Lý do.** MCP chỉ có tool, không có hook — nó là **tập con** của mô hình plugin, nên tái dùng manifest/limits/lifecycle thay vì dựng hệ thống thứ hai (§15.3). Đặt dưới cùng chính sách nghĩa là một MCP server không có quyền nhiều hơn một plugin Lua. Còn việc giữ tool MCP ngoài tool list là để **chi phí context tỉ lệ với số capability đã dùng, không phải số capability đã khai báo** — điều kiện để "khai báo 3 server" và "chạy trên 1 GB" không loại trừ nhau.
 
 **Đã loại.**
+- Nạp tool MCP vào tool list của agent chính (mô hình Cline/Roo): 50–200 `inputSchema` mỗi lượt, vừa ăn token vừa giữ chuỗi JSON trong RAM suốt session.
+- Bắt mọi lần gọi đi qua subagent: gấp đôi lượt model cho ca một-phát, và trên `constrained` là hai context cùng sống.
 - Nhúng MCP SDK và giữ connection thường trực cho mọi server đã khai báo: ~40–60 MB × N, chết trước khi turn đầu tiên chạy.
 - Cho tool MCP bỏ approval vì "server đã được người dùng cài": cài một server không phải là cấp quyền chạy lệnh trên mọi file.
-- Chạy MCP qua HTTP ngay giai đoạn 1: thêm TLS/token/timeout cho một bề mặt chưa có người dùng thật.
+- Tự cài hoặc tự tải MCP server hộ người dùng (`npx -y`, `pip install`, tải binary): biến Ananke thành bên phân phối code chưa ai kiểm chứng, và biến lỗi mạng thành lỗi của Ananke.
 
 ---
 
@@ -920,7 +946,7 @@ ananke/
     ananke-service/              # daemon lifecycle, discovery, auth
     ananke-plugin-host/          # JSON-RPC host, manifest, lifecycle, hook budget (AD-20 … AD-23)
     ananke-plugin-lua/           # binary runner LuaJIT (mlua), stdlib bị cắt (AD-21)
-    ananke-mcp/                  # MCP client: stdio NDJSON, namespace tool, lazy spawn (AD-25)
+    ananke-mcp/                  # MCP client: stdio + http, index tool, 3 tầng search/call/task (AD-25)
     ananke-client/               # Rust client cho third-party (chỉ phụ thuộc protocol)
     ananke-embedded/             # in-process transport
     ananke-cli/                  # binary: run / serve / service / api / pair / tui / plugin / upgrade / mcp
@@ -949,7 +975,7 @@ ananke/
 | **M0 — Skeleton** | workspace crates, protocol type, router `/api/meta`, session CRUD, một provider, tool `bash`/`read`, SQLite, profile thiết bị + `/api/limits`, phát hiện năng lực sandbox, build `aarch64-linux-android` | `curl` tạo session và chạy được 1 turn; `openapi.json` sinh ra và commit; `/api/meta` báo đúng `deviceProfile` và `sandbox` trên máy test |
 | **M1 — Turn & approval** | agent loop đầy đủ, streaming Part, permission rules, **file hướng dẫn + system slot (AD-24)**, SSE replay, interrupt/steer, persist turn trước khi dispatch tool (AD-17), retention event log, TLS + `/api/pair`, TUI TypeScript (OpenTUI + `@ananke/sdk`), `/api/tui/*` control channel | `AGENTS.md` ở root được nạp đúng một lần, sửa file thì turn sau thấy bản mới, vượt ngân sách có `instructions.truncated`; một `AGENTS.md` đòi bỏ approval không làm đổi permission rules; TUI hoàn thành một task sửa file có approval; kill TUI rồi mở lại vẫn thấy đúng lịch sử; script gọi `/api/tui/append-prompt` chèn được text vào TUI đang mở; RSS service idle + 2 session < 80 MB trên máy 1 GB; `kill -9` giữa turn rồi restart vẫn đúng lịch sử, turn `awaiting_tool` tự hoàn tất |
 | **M2 — Đa client & plugin** | service discovery, desktop app, **app điện thoại + pairing QR**, SSE resync, SDK publish + versioning, web UI, **plugin host + `ananke-plugin-lua` + `/api/plugin` (AD-20, AD-21)** | TUI + desktop mở cùng session, thao tác trên một bên hiện tức thì bên kia; ghép điện thoại qua QR rồi hoàn tất một turn có approval khi máy không cài TUI; reload web không mất turn; cài một plugin Lua đăng ký 1 tool bằng `ananke plugin install`, tool đó chạy có approval như built-in; `kill -9` runner giữa hook không làm hỏng turn |
-| **M3 — Mở rộng** | ACP/IDE, Python/Go SDK, `@ananke/plugin-sdk`, hook `transform`/`guard` có budget (AD-23), embedded mode, sandbox hardening, **MCP client stdio (AD-25)**, **sub-agent tuần tự theo AD-16** | Khai báo 2 MCP server, chỉ server được gọi mới spawn; `constrained` giữ tối đa 1 process sống; `kill -9` server giữa call trả `mcp_unavailable` mà turn vẫn xong; SDK Python chạy được một task headless trong CI; plugin viết bằng TS/Python chạy cùng protocol với plugin Lua; test boundary pass; trên profile `constrained`, cha spawn được 1 sub-agent `depth = 1`, vượt cap thì có `subagent.queued` thay vì OOM |
+| **M3 — Mở rộng** | ACP/IDE, Python/Go SDK, `@ananke/plugin-sdk`, hook `transform`/`guard` có budget (AD-23), embedded mode, sandbox hardening, **MCP client `stdio` + `http`, 3 tầng `mcp_search`/`mcp_call`/`task` (AD-25)**, **sub-agent tuần tự theo AD-16** | Tool list của agent chính không chứa `mcp__*`; `mcp_search` trả đúng tool cho 3 câu hỏi mẫu; khai báo 2 MCP server, chỉ server được gọi mới spawn; `constrained` giữ tối đa 1 process sống và chỉ bật tầng 0+1; `kill -9` server giữa call trả `mcp_unavailable` mà turn vẫn xong; SDK Python chạy được một task headless trong CI; plugin viết bằng TS/Python chạy cùng protocol với plugin Lua; test boundary pass; trên profile `constrained`, cha spawn được 1 sub-agent `depth = 1`, vượt cap thì có `subagent.queued` thay vì OOM |
 | **M4 — Nâng cao** | subagent nền song song, worktree song song, Code Mode-style tool composition | Hai subagent chạy nền trên hai worktree, tổng hợp về session cha |
 
 ---
@@ -976,8 +1002,10 @@ Một PR được coi là đúng kiến trúc khi:
 - [ ] Tool do plugin đăng ký ghi đủ input/output vào event log và đi qua approval như built-in tool.
 - [ ] System message được dựng lại mỗi lượt từ nguồn ngoài session; `session.messages()` không chứa system; test khẳng định replay `since` không nhân bản instructions (AD-24).
 - [ ] File hướng dẫn không cấp quyền: test một `AGENTS.md` yêu cầu bỏ approval không thay đổi permission rules (AD-24).
-- [ ] MCP server chỉ spawn khi tool được gọi; `constrained` không vượt `max_mcp_servers` process; `kill -9` server giữa call chỉ trả `mcp_unavailable` (AD-25).
+- [ ] Tool list của agent chính không chứa tên `mcp__*`; `inputSchema` của MCP không có trong request gửi provider; test khẳng định `mcp_search` không spawn process (AD-25).
+- [ ] MCP server chỉ spawn khi tool được gọi; `constrained` không vượt `max_mcp_servers` process và không bật tầng 2; `kill -9` server giữa call chỉ trả `mcp_unavailable` (AD-25).
 - [ ] Tool MCP ghi vào event log với `serverID` + tên gốc, không chỉ tên đã namespace (AD-25).
+- [ ] `mcp_call` chỉ nhận tool đã có trong index của server đã khai báo; kết quả vượt budget bị cắt và có cờ `truncated`, không đẩy nguyên văn vào history (AD-25).
 
 ---
 
@@ -990,7 +1018,9 @@ Một PR được coi là đúng kiến trúc khi:
 | Service version skew với client | Client gọi method không tồn tại | `protocolVersion` + `capabilities`; client degrade; major bump có migration |
 | Orphan/zombie daemon, tranh chấp lockfile | Hai engine cùng workspace | Singleton lock; `service status`; kiểm tra `pid` + start time; crash recovery |
 | MCP server ngoài sandbox | Thoát sandbox | `sandbox: inherited` là mặc định; `external` phải khai báo tường minh và hiện trong `/api/meta` (AD-25) |
-| Mỗi MCP server là process Node/Python ~40–60 MB | Vượt ngân sách 1 GB khi khai báo nhiều server | Lazy spawn, idle stop 60 s, `max_mcp_servers = 1` trên `constrained`, schema cache trong SQLite (AD-25) |
+| Mỗi MCP server là process Node/Python ~40–60 MB | Vượt ngân sách 1 GB khi khai báo nhiều server | Lazy spawn, idle stop 60 s, `max_mcp_servers = 1` trên `constrained`, index trong SQLite thay vì schema trong RAM (AD-25) |
+| Search-first thêm một lượt model cho lần dùng đầu của mỗi capability | Chậm hơn tool built-in ở ca một-phát, nhất là trên máy yếu | Index BM25 trên tên + mô tả + alias trong `mcp.json`; sticky pin ≤ 3 tool cho N lượt; đo số lượt trung bình trước khi tối ưu thêm (AD-25) |
+| Subagent MCP (tầng 2) là context thứ hai trong cùng process | Trên 1 GB, hai context cùng sống dễ vượt trần và bị LMK giết | Tầng 2 tắt trên `constrained`; chỉ bật khi context cha > 70% trần; context con drop sau khi trả kết quả (AD-25) |
 | `AGENTS.md` trong repo độc hại bơm chỉ thị ("bỏ approval", "gửi ~/.ssh") | Model làm theo lệnh của repo thay vì của người dùng | Instructions là dữ liệu không tin cậy, không cấp quyền; approval vẫn chặn; ngân sách byte chặn nhồi text (AD-24) |
 | Protocol công khai bị phụ thuộc | Khó breaking change | Chỉ thêm; deprecate có lịch; major version có tài liệu migration |
 | TUI/desktop/web dùng chung `@ananke/sdk` → một bug lan ra cả ba surface | Hỏng đồng loạt | SDK generated + wrapper mỏng có test riêng; conformance test chạy cùng bộ case qua HTTP |
@@ -1016,7 +1046,8 @@ Một PR được coi là đúng kiến trúc khi:
 - Relay/tunnel do Ananke cung cấp cho client ngoài LAN (người dùng tự dựng VPN/tunnel).
 - Hỗ trợ Windows sandbox đầy đủ ngang macOS/Linux (M3).
 - WebSocket transport (chỉ thêm nếu SSE không đủ).
-- MCP qua HTTP/streamable và các method `sampling`/`roots`/`elicitation` (AD-25).
+- MCP client, cả `stdio` và HTTP/streamable — thuộc M3 (AD-25).
+- Các method `sampling`/`roots`/`elicitation` — không hỗ trợ ở bất kỳ giai đoạn nào (AD-25).
 - Cơ chế "trust" cho file hướng dẫn — mọi `AGENTS.md` đều là dữ liệu không tin cậy (AD-24).
 
 ---
@@ -1034,6 +1065,8 @@ Một PR được coi là đúng kiến trúc khi:
 9. Plugin có được đăng ký **slash command** và **message renderer** như Pi, hay chỉ tool + hook?
 10. `AGENTS.md` có nên hỗ trợ `@import` trỏ tới file khác, hay giữ phẳng để ngân sách byte là tuyệt đối?
 11. `AGENTS.md` ở thư mục con: nạp theo file mà tool vừa chạm (động, đúng ngữ cảnh) hay theo toàn bộ cây workspace (tĩnh, dễ đoán hơn nhưng tốn ngân sách)?
+12. Sticky pin của `mcp_search` nên tính theo **số lượt** hay theo **turn**? Theo lượt thì nhả sớm khi turn dài, theo turn thì giữ lâu hơn nhưng dễ tích lại thành tool list thu nhỏ.
+13. `mcp_search` dùng BM25 thuần trên tên + mô tả, hay thêm embedding? Embedding tăng độ trúng nhưng mang thêm model/vector store — thứ đáng ngờ trên máy 1 GB.
 
 ---
 
@@ -1066,7 +1099,7 @@ Plugin **không** thay được agent loop. Đây là khác biệt có chủ ý 
 - Thêm một tool, hoặc một kiểm tra trước khi chạy tool → **plugin**.
 - Đổi cách gọi model, thêm provider → **plugin** nếu chỉ cần `http` + định dạng request; **seam** nếu cần streaming/usage riêng.
 - Thay agent loop, cách nén context, thứ tự turn → **fork**, không phải plugin.
-- Đã có MCP server → dùng **MCP** (AD-25); MCP chỉ có tool, không có hook.
+- Đã có MCP server → dùng **MCP** (AD-25); MCP chỉ có tool, không có hook, và tool của nó vẫn phải đi qua `mcp_search` → `mcp_call`/`task`, không vào tool list.
 - Cần UI khác → **client** trên `/api`, không phải plugin.
 
 ### 15.4 Vì sao chưa WASM
