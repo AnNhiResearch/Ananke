@@ -143,10 +143,10 @@ cargo run -p ananke-protocol -- gen openapi
 
 ## Development status
 
-- **M0 — Skeleton:** workspace, protocol, router, `/api/meta`, session/turn API, SQLite, provider, built-in tools, device profiling, and sandbox detection.
-- **M1 — Turn & approval:** complete agent loop, streaming, permission rules, SSE replay, interrupt/steer, and persistence before tool dispatch.
-- **M2 — Multiple clients & plugins:** service discovery, desktop/mobile/web clients, pairing, and plugin host.
-- **M3 — Expansion:** ACP/IDE, multi-language SDKs, embedded mode, and sandbox hardening.
+- **M0 — Skeleton (Complete):** workspace, protocol, router, `/api/meta`, session/turn API, SQLite, provider, built-in tools, device profiling, and sandbox detection.
+- **M1 — Turn & approval (In Progress):** agent loop, streaming, permission rules, SSE replay, interrupt/steer endpoints, SQLite persistence before tool dispatch, admission control, and event retention (refer to `M1_IMPLEMENTATION_PLAN.md` for active acceptance criteria & test matrix).
+- **M2 — Multiple clients & plugins (Planned):** service discovery, desktop/mobile/web clients, pairing, and plugin host.
+- **M3 — Expansion (Planned):** ACP/IDE, multi-language SDKs, embedded mode, and sandbox hardening.
 
 Some surfaces and plugins remain on the roadmap and are not included in the default headless binary.
 

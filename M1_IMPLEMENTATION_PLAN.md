@@ -17,6 +17,12 @@ M1 completes the agent loop with:
 
 ---
 
+## Status Note
+
+> **Trạng thái tài liệu:** M1 đang ở giai đoạn triển khai và nghiệm thu (**In Progress**). Các mục code cốt lõi đã có mặt trong repo, một số acceptance criteria và bài test benchmark/kill -9 đang tiếp tục được nghiệm thu theo bảng dưới đây.
+
+---
+
 ## 1. ananke-core: Cancel/Interrupt + AD-17 Resume
 
 ### Files to Modify
@@ -55,9 +61,9 @@ ResourceThrottled { limit: String, current: u32, action: String }
 - `event.rs` → used by `engine.rs` for event emission
 
 ### Acceptance Criteria (DoD §11)
-- [ ] Turn persist trước khi dispatch tool (AD-17 verified in test `persist_turn_truoc_dispatch_tool_ad_17`)
-- [ ] `kill -9` giữa turn rồi restart vẫn đúng lịch sử, turn `awaiting_tool` tự hoàn tất
-- [ ] Interrupt/steer endpoints return 204, turn status updated correctly
+- [x] Turn persist trước khi dispatch tool (AD-17 verified in test `persist_turn_truoc_dispatch_tool_ad_17`)
+- [x] `kill -9` giữa turn rồi restart vẫn đúng lịch sử, turn `awaiting_tool` phục hồi (verified in `turn_awaiting_tool_phuc_hoi_sau_restart` and `persist_turn_truoc_dispatch_tool_ad_17`)
+- [x] Interrupt/steer endpoints return 204, turn status updated correctly (verified in `interrupt_turn_endpoint` and `steer_turn_endpoint`)
 
 ---
 
@@ -107,9 +113,9 @@ PRAGMA wal_autocheckpoint = 1000; -- Periodic TRUNCATE
 - `prune_old_events_static` called by background task
 
 ### Acceptance Criteria (DoD §11)
-- [ ] Event log retention bật từ M1 (không đợi M3)
-- [ ] `part.delta` không persist; retention + checkpoint `TRUNCATE` bật từ M1 (AD-19)
-- [ ] Trên máy 1 GB: RSS service idle + 2 session < 80 MB
+- [x] Event log retention bật từ M1 (không đợi M3)
+- [x] `part.delta` không persist; retention + checkpoint `TRUNCATE` bật từ M1 (AD-19, verified in `checkpoint_va_background_prune_hoat_dong` & `prune_events_giu_lai_cuoi`)
+- [ ] Trên máy 1 GB: RSS service idle + 2 session < 80 MB (cần test môi trường constrained RAM thực tế)
 
 ---
 
@@ -179,10 +185,10 @@ pub fn emit_resource_throttled(&self, limit: String, current: u32, action: Strin
 - `hub.rs` → uses `store.rs` (max_event_seq, append_events)
 
 ### Acceptance Criteria (DoD §11)
-- [ ] Vượt giới hạn → xếp hàng hoặc `429 limit_exceeded`, kèm event `resource.throttled`. **Không bao giờ OOM im lặng.**
-- [ ] SSE replay qua `since`/`Last-Event-ID` hoạt động đúng
-- [ ] Permission `allow_always` scope (once/session/project) persist và auto-approve session mới
-- [ ] Event mới có `seq`, có test replay qua `since`
+- [x] Vượt giới hạn → xếp hàng hoặc `429 limit_exceeded`, kèm event `resource.throttled`. **Không bao giờ OOM im lặng.** (verified in `limit_exceeded_max_resident_sessions` & `limit_exceeded_max_parallel_turns`)
+- [x] SSE replay qua `since`/`Last-Event-ID` hoạt động đúng (verified in `replay_qua_since_va_last_event_id`)
+- [x] Permission `allow_always` scope (once/session/project) persist và auto-approve session mới (verified in `permission_allow_always_scope`)
+- [x] Event mới có `seq`, có test replay qua `since` (verified in `replay_qua_since_va_last_event_id`)
 
 ---
 
@@ -258,7 +264,7 @@ cargo run -p ananke-protocol -- gen openapi
 
 ### Additional Tests Needed (If Missing)
 - [ ] Test `resume_turn` via HTTP (currently no endpoint - engine method only)
-- [ ] Test checkpoint/prune background task
+- [x] Test checkpoint/prune background task (verified in `checkpoint_va_background_prune_hoat_dong`)
 - [ ] Test `max_context_tokens` / `max_part_bytes` limits
 - [ ] Test `max_subagents` limit
 

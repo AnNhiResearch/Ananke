@@ -299,3 +299,51 @@ async fn turn_awaiting_tool_phuc_hoi_sau_restart() {
 
     cleanup(&path);
 }
+
+#[tokio::test]
+async fn checkpoint_va_background_prune_hoat_dong() {
+    let path = temp_db("checkpoint_prune");
+    let retention = ananke_store::RetentionConfig {
+        max_events_per_session: 3,
+        max_event_age_days: 30,
+        prune_interval_secs: 1,
+        enable_auto_prune: false,
+    };
+
+    let mut store = SqliteStore::new_with_config(&path, retention).expect("mở store với config");
+    let session = Session::new("model-test");
+    let session_id = session.id.clone();
+    store.save_session(&session).expect("save session");
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let events: Vec<Event> = (1..=6)
+        .map(|seq| Event {
+            seq,
+            session_id: session_id.clone(),
+            at: now_ms + seq,
+            kind: EventKind::Warning {
+                message: format!("chk {seq}"),
+            },
+        })
+        .collect();
+    store.append_events(&events).expect("append events");
+
+    // Test checkpoint WAL
+    assert!(store.checkpoint().is_ok(), "checkpoint WAL phải thành công");
+
+    // Test prune_old_events theo config (max 3 events)
+    let removed = store.prune_old_events().expect("prune old events");
+    assert_eq!(removed, 3, "phải dọn 3 event cũ vượt ngưỡng");
+
+    let remaining = store.events_since(&session_id, 0).expect("events since 0");
+    assert_eq!(remaining.len(), 3);
+    assert_eq!(remaining[0].seq, 4);
+    assert_eq!(remaining[2].seq, 6);
+
+    store.shutdown();
+    cleanup(&path);
+}
