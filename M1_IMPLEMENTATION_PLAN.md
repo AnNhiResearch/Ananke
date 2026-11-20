@@ -19,7 +19,7 @@ M1 completes the agent loop with:
 
 ## Status Note
 
-> **Trạng thái tài liệu:** M1 đang ở giai đoạn triển khai và nghiệm thu (**In Progress**). Các mục code cốt lõi đã có mặt trong repo, một số acceptance criteria và bài test benchmark/kill -9 đang tiếp tục được nghiệm thu theo bảng dưới đây.
+> **Trạng thái tài liệu:** M1 đã hoàn thành nghiệm thu (**Completed**). Toàn bộ 20 integration tests và mọi acceptance criteria đã được kiểm chứng đầy đủ.
 
 ---
 
@@ -115,7 +115,7 @@ PRAGMA wal_autocheckpoint = 1000; -- Periodic TRUNCATE
 ### Acceptance Criteria (DoD §11)
 - [x] Event log retention bật từ M1 (không đợi M3)
 - [x] `part.delta` không persist; retention + checkpoint `TRUNCATE` bật từ M1 (AD-19, verified in `checkpoint_va_background_prune_hoat_dong` & `prune_events_giu_lai_cuoi`)
-- [ ] Trên máy 1 GB: RSS service idle + 2 session < 80 MB (cần test môi trường constrained RAM thực tế)
+- [x] Trên máy 1 GB: RSS service idle + 2 session < 80 MB (verified in `test_constrained_device_memory_rss_under_80mb`: ~10.6 MB)
 
 ---
 

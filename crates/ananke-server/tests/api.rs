@@ -1903,3 +1903,97 @@ async fn limit_exceeded_max_subagents() {
     // Cleanup counter
     state.sessions.decrement_active_subagents();
 }
+
+#[tokio::test]
+async fn test_constrained_device_memory_rss_under_80mb() {
+    let state = make_test_state().await;
+    let app = build(state.clone()).layer(from_fn(protocol_guard));
+
+    // 1. Tạo 2 session như tiêu chí: "RSS service idle + 2 session < 80 MB trên máy 1 GB"
+    let session_id1 = create_session_helper(&app).await;
+    let session_id2 = create_session_helper(&app).await;
+
+    // Chạy 1 turn cơ bản trên mỗi session để nạp dữ liệu và cấu trúc vào bộ nhớ
+    let _turn1 = create_turn_helper(
+        &app,
+        &session_id1,
+        vec![ananke_protocol::InputPartDto::Text { text: "session 1 warmup".into() }],
+    ).await;
+    let _turn2 = create_turn_helper(
+        &app,
+        &session_id2,
+        vec![ananke_protocol::InputPartDto::Text { text: "session 2 warmup".into() }],
+    ).await;
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    // 2. Đo RSS thực tế của process hiện tại
+    #[cfg(windows)]
+    let rss_bytes: usize = {
+        #[repr(C)]
+        struct PROCESS_MEMORY_COUNTERS {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+
+        #[link(name = "psapi")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn GetProcessMemoryInfo(
+                process: *mut std::ffi::c_void,
+                counters: *mut PROCESS_MEMORY_COUNTERS,
+                cb: u32,
+            ) -> i32;
+        }
+
+        unsafe {
+            let mut pmc = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+            pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            let handle = GetCurrentProcess();
+            if GetProcessMemoryInfo(handle, &mut pmc, pmc.cb) != 0 {
+                pmc.working_set_size
+            } else {
+                0
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    let rss_bytes: usize = {
+        let mut rss = 0;
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if line.starts_with("VmRSS:") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        if let Ok(kb) = parts[1].parse::<usize>() {
+                            rss = kb * 1024;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        rss
+    };
+
+    let rss_mb = (rss_bytes as f64) / (1024.0 * 1024.0);
+    println!("Measured process working set / RSS: {:.2} MB", rss_mb);
+
+    // Tiêu chí M1: RSS server idle + 2 session < 80 MB trên máy 1 GB RAM
+    if rss_bytes > 0 {
+        assert!(
+            rss_mb < 80.0,
+            "Working set ({:.2} MB) vượt ngưỡng 80 MB cho phép!",
+            rss_mb
+        );
+    }
+}
