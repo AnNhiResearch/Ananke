@@ -77,4 +77,25 @@ impl Session {
             .iter()
             .filter(|turn| matches!(turn.status, crate::turn::TurnStatus::AwaitingTool))
     }
+
+    /// Ước lượng số token của context trong session (AD-15/AD-24).
+    /// Heuristic chuẩn: 1 token ~ 4 ký tự cho văn bản text/reasoning/tool arguments.
+    pub fn estimated_context_tokens(&self) -> u32 {
+        let mut char_count = 0;
+        for msg in &self.messages {
+            for part in &msg.parts {
+                match part {
+                    crate::Part::Text { text, .. } => char_count += text.len(),
+                    crate::Part::Reasoning { text, .. } => char_count += text.len(),
+                    crate::Part::ToolCall { tool, arguments, .. } => {
+                        char_count += tool.len() + arguments.to_string().len();
+                    }
+                    crate::Part::ToolResult { output, .. } => {
+                        char_count += output.len();
+                    }
+                }
+            }
+        }
+        (char_count.div_ceil(4)) as u32
+    }
 }

@@ -15,6 +15,7 @@ pub enum ApiError {
     NotImplemented(ProblemDetails),
     Internal(ProblemDetails),
     TooManyRequests(ProblemDetails),
+    PayloadTooLarge(ProblemDetails),
 }
 
 impl ApiError {
@@ -47,6 +48,12 @@ impl ApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too Many Requests",
                 "resource_throttled",
+                problem,
+            ),
+            Self::PayloadTooLarge(problem) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload Too Large",
+                "limit_exceeded",
                 problem,
             ),
         }

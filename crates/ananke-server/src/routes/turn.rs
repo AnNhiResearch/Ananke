@@ -58,9 +58,7 @@ pub async fn create_turn(
         }
     };
 
-    // AD-15: Check max_parallel_turns admission control (global limit across all sessions)
-    // We do this AFTER acquiring the session lock so we can see active turns in other sessions
-    // that are also holding their locks.
+    // AD-15: Check admission control (max_parallel_turns & max_part_bytes)
     {
         let limits = state.limits.read().await;
         let global_active_turns = state.sessions.global_active_turn_count();
@@ -78,6 +76,44 @@ pub async fn create_turn(
             .with_detail(detail)
             .with_code("resource_throttled");
             
+            return Err(ApiError::TooManyRequests(problem));
+        }
+
+        // Validate max_part_bytes cho từng input part
+        for part in &body.input {
+            let part_len = match part {
+                ananke_protocol::InputPartDto::Text { text } => text.len(),
+            };
+            if part_len > limits.max_part_bytes as usize {
+                state.hub.emit_resource_throttled("max_part_bytes".to_owned(), part_len as u32, "rejected".to_owned());
+                let detail = format!(
+                    "input part bytes ({}) vượt quá max_part_bytes ({})",
+                    part_len, limits.max_part_bytes
+                );
+                let problem = ananke_protocol::ProblemDetails::new(
+                    StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+                    "Payload Too Large",
+                )
+                .with_detail(detail)
+                .with_code("limit_exceeded");
+                return Err(ApiError::PayloadTooLarge(problem));
+            }
+        }
+
+        // Validate max_context_tokens đối với context hiện tại của session
+        let current_tokens = guard.estimated_context_tokens();
+        if current_tokens > limits.max_context_tokens {
+            state.hub.emit_resource_throttled("max_context_tokens".to_owned(), current_tokens, "rejected".to_owned());
+            let detail = format!(
+                "estimated context tokens ({}) vượt quá max_context_tokens ({})",
+                current_tokens, limits.max_context_tokens
+            );
+            let problem = ananke_protocol::ProblemDetails::new(
+                StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                "Too Many Requests",
+            )
+            .with_detail(detail)
+            .with_code("resource_throttled");
             return Err(ApiError::TooManyRequests(problem));
         }
     }
@@ -268,6 +304,67 @@ pub async fn steer_turn(
         let result = engine.steer_turn(&mut session, &steer_turn_id, input_messages).await;
         if let Err(err) = &result {
             tracing::error!(session = %task_session, error = %err, "steer turn kết thúc với lỗi");
+        }
+        drop(session);
+        sessions.decrement_active_turns();
+    });
+
+    running_tasks.lock().await.insert(turn_id, join_handle);
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/session/{id}/turn/{turnID}/resume` — tiếp tục turn đang AwaitingTool (AD-17).
+pub async fn resume_turn(
+    State(state): State<AppState>,
+    Path((raw_session, raw_turn)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let session_id = session_id(&raw_session);
+    let turn_id = TurnId::from(raw_turn);
+
+    let handle = state
+        .sessions
+        .get_or_load(&state.store, &session_id)
+        .await
+        .map_err(map_store_error)?
+        .ok_or_else(|| not_found(&session_id))?;
+
+    let session = handle.lock().await;
+
+    let can_resume = {
+        let turn = session.turn(&turn_id).ok_or_else(|| not_found(&session_id))?;
+        matches!(turn.status, TurnStatus::AwaitingTool)
+    };
+
+    if !can_resume {
+        let detail = "turn không ở trạng thái AwaitingTool - action: resume, allowed_states: [awaiting_tool]".to_owned();
+        let problem = ananke_protocol::ProblemDetails::new(
+            StatusCode::BAD_REQUEST.as_u16(),
+            "Bad Request",
+        )
+        .with_detail(detail)
+        .with_code("bad_state");
+        return Err(ApiError::BadRequest(problem));
+    }
+
+    let engine = Arc::clone(&state.engine);
+    let task_session = session_id.clone();
+    let resume_turn_id = turn_id.clone();
+    let sessions = state.sessions.clone();
+    let running_tasks = Arc::clone(&state.running_tasks);
+
+    // Increment active turns for admission control tracking
+    sessions.increment_active_turns();
+
+    drop(session);
+
+    let handle_clone = Arc::clone(&handle);
+    let join_handle = tokio::spawn(async move {
+        let session = handle_clone.lock().await;
+        let mut session = session;
+        let result = engine.resume_turn(&mut session, &resume_turn_id).await;
+        if let Err(err) = &result {
+            tracing::error!(session = %task_session, error = %err, "resume turn kết thúc với lỗi");
         }
         drop(session);
         sessions.decrement_active_turns();

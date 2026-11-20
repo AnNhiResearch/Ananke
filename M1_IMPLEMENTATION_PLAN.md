@@ -263,9 +263,9 @@ cargo run -p ananke-protocol -- gen openapi
 | `permission_allow_always_scope` | AllowAlways scope persist + auto-approve new session | ✅ Exists |
 
 ### Additional Tests Needed (If Missing)
-- [ ] Test `resume_turn` via HTTP (currently no endpoint - engine method only)
+- [x] Test `resume_turn` via HTTP (verified in `persist_turn_truoc_dispatch_tool_ad_17` via `POST /api/session/{id}/turn/{turn_id}/resume`)
 - [x] Test checkpoint/prune background task (verified in `checkpoint_va_background_prune_hoat_dong`)
-- [ ] Test `max_context_tokens` / `max_part_bytes` limits
+- [x] Test `max_context_tokens` / `max_part_bytes` limits (verified in `limit_exceeded_max_part_bytes_and_max_context_tokens`)
 - [ ] Test `max_subagents` limit
 
 ### Run Tests

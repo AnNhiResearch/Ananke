@@ -49,6 +49,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::turn::steer_turn),
         )
         .route(
+            "/session/{id}/turn/{turn_id}/resume",
+            post(routes::turn::resume_turn),
+        )
+        .route(
             "/session/{id}/permission/{perm_id}",
             post(routes::permission::resolve_permission),
         );

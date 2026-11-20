@@ -897,7 +897,7 @@ async fn persist_turn_truoc_dispatch_tool_ad_17() {
     // which means it can be resumed via engine.resume_turn()
     
     // Verify we can get the session and turn from store
-    let session_id_obj: SessionId = session_id.into();
+    let session_id_obj: SessionId = session_id.clone().into();
     let handle = new_state.sessions.get_or_load(&new_state.store, &session_id_obj)
         .await
         .expect("get session")
@@ -907,6 +907,25 @@ async fn persist_turn_truoc_dispatch_tool_ad_17() {
         .expect("turn should exist");
     assert!(matches!(turn_ref.status, ananke_core::turn::TurnStatus::AwaitingTool),
         "Turn should be AwaitingTool in core");
+    drop(session);
+
+    // Call POST /api/session/{id}/turn/{turn_id}/resume via HTTP
+    let resume_resp = request(
+        &new_app,
+        Method::POST,
+        &format!("/api/session/{session_id}/turn/{turn_id}/resume"),
+        None,
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(
+        resume_resp.status(),
+        StatusCode::NO_CONTENT,
+        "Resume endpoint phải trả về 204 No Content"
+    );
 }
 
 /// 4. Limit exceeded (AD-15):
@@ -1709,4 +1728,117 @@ async fn test_models_api_list_and_register() {
     assert_eq!(list2.models[0].name, "DeepSeek Coder V2");
     assert_eq!(list2.models[0].base_url, "https://api.deepseek.com");
     assert_eq!(list2.models[0].context_window, Some(64000));
+}
+
+#[tokio::test]
+async fn limit_exceeded_max_part_bytes_and_max_context_tokens() {
+    let state = make_test_state().await;
+    let app = build(state.clone()).layer(from_fn(protocol_guard));
+
+    let session_id = create_session_helper(&app).await;
+
+    // 1. Test max_part_bytes: patch max_part_bytes = 50
+    let patch_body = serde_json::to_string(&ananke_protocol::PatchLimitsRequest {
+        max_part_bytes: Some(50),
+        max_context_tokens: None,
+        max_resident_sessions: None,
+        max_parallel_turns: None,
+        max_subagents: None,
+        max_event_bytes: None,
+    })
+    .unwrap();
+
+    let resp_patch = request(
+        &app,
+        Method::PATCH,
+        "/api/limits",
+        Some(patch_body),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp_patch.status(), StatusCode::OK);
+
+    // Gửi part dài 100 bytes (> 50 bytes) -> phải nhận 413 Payload Too Large
+    let large_input = "a".repeat(100);
+    let turn_body = serde_json::to_string(&ananke_protocol::CreateTurnRequest {
+        input: vec![ananke_protocol::InputPartDto::Text { text: large_input }],
+    })
+    .unwrap();
+
+    let resp_turn = request(
+        &app,
+        Method::POST,
+        &format!("/api/session/{session_id}/turn"),
+        Some(turn_body),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(
+        resp_turn.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "Part vượt quá max_part_bytes phải trả 413"
+    );
+
+    // 2. Test max_context_tokens: patch max_part_bytes = 100000, max_context_tokens = 5
+    let patch_body2 = serde_json::to_string(&ananke_protocol::PatchLimitsRequest {
+        max_part_bytes: Some(100000),
+        max_context_tokens: Some(5),
+        max_resident_sessions: None,
+        max_parallel_turns: None,
+        max_subagents: None,
+        max_event_bytes: None,
+    })
+    .unwrap();
+
+    let resp_patch2 = request(
+        &app,
+        Method::PATCH,
+        "/api/limits",
+        Some(patch_body2),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(resp_patch2.status(), StatusCode::OK);
+
+    // Bơm tin nhắn vào session để context vượt 5 tokens (~ 24 ký tự)
+    let session_id_obj: SessionId = session_id.clone().into();
+    let handle = state.sessions.get_or_load(&state.store, &session_id_obj).await.unwrap().unwrap();
+    {
+        let mut session_guard = handle.lock().await;
+        session_guard.push_message(ananke_core::Message::text(
+            ananke_core::Role::User,
+            "Nội dung ngữ cảnh rất dài để vượt quá ngưỡng token",
+        ));
+    }
+
+    let turn_body2 = serde_json::to_string(&ananke_protocol::CreateTurnRequest {
+        input: vec![ananke_protocol::InputPartDto::Text { text: "hello".into() }],
+    })
+    .unwrap();
+
+    let resp_turn2 = request(
+        &app,
+        Method::POST,
+        &format!("/api/session/{session_id}/turn"),
+        Some(turn_body2),
+        vec![(
+            HeaderName::from_static("x-ananke-protocol"),
+            HeaderValue::from_static("1"),
+        )],
+    )
+    .await;
+    assert_eq!(
+        resp_turn2.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "Context tokens vượt max_context_tokens phải trả 429"
+    );
 }
